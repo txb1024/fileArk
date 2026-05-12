@@ -7,6 +7,22 @@ const { randomUUID } = require("node:crypto");
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
+// ── Chromium 内存 / 性能优化（仅生产环境）───────────────────
+if (!isDev) {
+  // 禁用 GPU 硬件加速（省 ~30-80 MB，纯文档类应用无影响）
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  // 避免 /dev/shm 共享内存问题（Linux 容器 / CI 场景）
+  app.commandLine.appendSwitch("disable-dev-shm-usage");
+  // 禁用后台网络活动（减少空闲内存占用）
+  app.commandLine.appendSwitch("disable-background-networking");
+  // 禁用扩展 / 插件支持（本应用不需要）
+  app.commandLine.appendSwitch("disable-extensions");
+  // 减少渲染进程优先级（降低整体内存压力）
+  app.commandLine.appendSwitch("renderer-process-limit", "1");
+}
+
 const defaultCategories = [
   "01_需求",
   "02_技術方案",
@@ -20,8 +36,12 @@ const defaultCategories = [
   "99_臨時資料"
 ];
 
-function getDataPath() {
-  return path.join(app.getPath("userData"), "data.json");
+function getRegistryPath() {
+  return path.join(app.getPath("userData"), "registry.json");
+}
+
+function getWorkspaceDataPath(dataFile) {
+  return path.join(app.getPath("userData"), dataFile);
 }
 
 function getDefaultRoot() {
@@ -44,22 +64,61 @@ function createDefaultData() {
   };
 }
 
-async function ensureData() {
-  const dataPath = getDataPath();
-  await fs.mkdir(path.dirname(dataPath), { recursive: true });
-  if (!fssync.existsSync(dataPath)) {
-    await fs.writeFile(dataPath, JSON.stringify(createDefaultData(), null, 2), "utf-8");
+async function ensureRegistry() {
+  const registryPath = getRegistryPath();
+  if (fssync.existsSync(registryPath)) return;
+
+  const oldDataPath = path.join(app.getPath("userData"), "data.json");
+  const id = randomUUID();
+  const dataFile = `workspace-${id}.json`;
+
+  if (fssync.existsSync(oldDataPath)) {
+    await fs.rename(oldDataPath, getWorkspaceDataPath(dataFile));
+  } else {
+    await fs.mkdir(path.dirname(getWorkspaceDataPath(dataFile)), { recursive: true });
+    await fs.writeFile(getWorkspaceDataPath(dataFile), JSON.stringify(createDefaultData(), null, 2), "utf-8");
   }
+
+  const registry = {
+    activeWorkspaceId: id,
+    workspaces: [{ id, name: "個人項目資料庫", dataFile, createdAt: now() }]
+  };
+  await fs.writeFile(registryPath, JSON.stringify(registry, null, 2), "utf-8");
 }
 
-async function readData() {
-  await ensureData();
-  const raw = await fs.readFile(getDataPath(), "utf-8");
+async function readRegistry() {
+  await ensureRegistry();
+  const raw = await fs.readFile(getRegistryPath(), "utf-8");
   return JSON.parse(raw);
 }
 
+async function writeRegistry(registry) {
+  await fs.writeFile(getRegistryPath(), JSON.stringify(registry, null, 2), "utf-8");
+}
+
+async function readData() {
+  const registry = await readRegistry();
+  const active = registry.workspaces.find((w) => w.id === registry.activeWorkspaceId);
+  const dataPath = getWorkspaceDataPath(active.dataFile);
+  if (!fssync.existsSync(dataPath)) {
+    await fs.writeFile(dataPath, JSON.stringify(createDefaultData(), null, 2), "utf-8");
+  }
+  const raw = await fs.readFile(dataPath, "utf-8");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const backupPath = dataPath + ".corrupt." + Date.now();
+    await fs.rename(dataPath, backupPath);
+    const fallback = createDefaultData();
+    await fs.writeFile(dataPath, JSON.stringify(fallback, null, 2), "utf-8");
+    return fallback;
+  }
+}
+
 async function writeData(data) {
-  await fs.writeFile(getDataPath(), JSON.stringify(data, null, 2), "utf-8");
+  const registry = await readRegistry();
+  const active = registry.workspaces.find((w) => w.id === registry.activeWorkspaceId);
+  await fs.writeFile(getWorkspaceDataPath(active.dataFile), JSON.stringify(data, null, 2), "utf-8");
 }
 
 function safeFolderName(value) {
@@ -165,7 +224,6 @@ ipcMain.handle("project:create", async (_event, input) => {
     name: input.name,
     alias: input.alias || "",
     tags: input.tags || [],
-    status: input.status || "進行中",
     path: projectPath,
     pinned: Boolean(input.pinned),
     createdAt: now(),
@@ -378,10 +436,75 @@ ipcMain.handle("category:add-files", async (_event, input) => {
   return data;
 });
 
+ipcMain.handle("inbox:delete", async (_event, itemIds) => {
+  const data = await readData();
+  const ids = new Set(itemIds);
+  data.inbox = data.inbox.filter((item) => !ids.has(item.id));
+  await writeData(data);
+  return data;
+});
+
+ipcMain.handle("inbox:clear", async () => {
+  const data = await readData();
+  data.inbox = [];
+  await writeData(data);
+  return data;
+});
+
 ipcMain.handle("file:open", async (_event, filePath) => {
   await shell.openPath(filePath);
 });
 
 ipcMain.handle("folder:open", async (_event, folderPath) => {
   await shell.openPath(folderPath);
+});
+
+ipcMain.handle("workspace:list", async () => readRegistry());
+
+ipcMain.handle("workspace:create", async (_event, name) => {
+  const registry = await readRegistry();
+  const id = randomUUID();
+  const dataFile = `workspace-${id}.json`;
+  const emptyData = createDefaultData();
+  await fs.writeFile(getWorkspaceDataPath(dataFile), JSON.stringify(emptyData, null, 2), "utf-8");
+  registry.workspaces.push({ id, name, dataFile, createdAt: now() });
+  registry.activeWorkspaceId = id;
+  await writeRegistry(registry);
+  return registry;
+});
+
+ipcMain.handle("workspace:switch", async (_event, workspaceId) => {
+  const registry = await readRegistry();
+  if (!registry.workspaces.find((w) => w.id === workspaceId)) {
+    throw new Error("找不到資料庫");
+  }
+  registry.activeWorkspaceId = workspaceId;
+  await writeRegistry(registry);
+  return readData();
+});
+
+ipcMain.handle("workspace:rename", async (_event, workspaceId, newName) => {
+  const registry = await readRegistry();
+  registry.workspaces = registry.workspaces.map((w) =>
+    w.id === workspaceId ? { ...w, name: newName } : w
+  );
+  await writeRegistry(registry);
+  return registry;
+});
+
+ipcMain.handle("workspace:delete", async (_event, workspaceId) => {
+  const registry = await readRegistry();
+  if (registry.workspaces.length <= 1) {
+    throw new Error("至少保留一個資料庫");
+  }
+  const target = registry.workspaces.find((w) => w.id === workspaceId);
+  registry.workspaces = registry.workspaces.filter((w) => w.id !== workspaceId);
+  if (registry.activeWorkspaceId === workspaceId) {
+    registry.activeWorkspaceId = registry.workspaces[0].id;
+  }
+  if (target) {
+    await fs.unlink(getWorkspaceDataPath(target.dataFile)).catch(() => {});
+  }
+  await writeRegistry(registry);
+  return registry;
 });

@@ -1,5 +1,3 @@
-export type ProjectStatus = "進行中" | "待處理" | "已歸檔";
-
 export type RecentFile = {
   name: string;
   path: string;
@@ -13,7 +11,6 @@ export type Project = {
   name: string;
   alias: string;
   tags: string[];
-  status: ProjectStatus;
   path: string;
   pinned: boolean;
   createdAt: string;
@@ -55,7 +52,6 @@ export type CreateProjectInput = {
   name: string;
   alias?: string;
   tags?: string[];
-  status?: ProjectStatus;
   root?: string;
   pinned?: boolean;
 };
@@ -87,6 +83,18 @@ export type CreateCategoryFolderInput = {
   folderName: string;
 };
 
+export type WorkspaceMeta = {
+  id: string;
+  name: string;
+  dataFile: string;
+  createdAt: string;
+};
+
+export type WorkspaceRegistry = {
+  activeWorkspaceId: string;
+  workspaces: WorkspaceMeta[];
+};
+
 export type ArchiveApi = {
   getData: () => Promise<AppData>;
   selectRoot: () => Promise<string | null>;
@@ -97,11 +105,18 @@ export type ArchiveApi = {
   updateRoot: (root: string) => Promise<AppData>;
   addInboxFiles: (filePaths: string[]) => Promise<AppData>;
   organizeInbox: (input: OrganizeInput) => Promise<AppData>;
+  deleteInboxItems: (itemIds: string[]) => Promise<AppData>;
+  clearInbox: () => Promise<AppData>;
   addFilesToCategory: (input: AddFilesToCategoryInput) => Promise<AppData>;
   createCategoryFolder: (input: CreateCategoryFolderInput) => Promise<CategoryFile[]>;
   listCategoryFiles: (projectPath: string, category: string) => Promise<CategoryFile[]>;
   openFile: (filePath: string) => Promise<void>;
   openFolder: (folderPath: string) => Promise<void>;
+  listWorkspaces: () => Promise<WorkspaceRegistry>;
+  createWorkspace: (name: string) => Promise<WorkspaceRegistry>;
+  switchWorkspace: (workspaceId: string) => Promise<AppData>;
+  renameWorkspace: (workspaceId: string, name: string) => Promise<WorkspaceRegistry>;
+  deleteWorkspace: (workspaceId: string) => Promise<WorkspaceRegistry>;
 };
 
 declare global {

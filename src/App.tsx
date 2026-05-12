@@ -1,14 +1,19 @@
 import {
   Archive,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
+  Database,
   FileInput,
   FolderPlus,
   FolderKanban,
   FolderOpen,
   Home,
   Inbox,
-  Languages,
   Moon,
+  Pencil,
   Pin,
   Plus,
   Search,
@@ -17,10 +22,11 @@ import {
   Star,
   Sun,
   Tags,
+  Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { AppData, CategoryFile, InboxItem, Project, ProjectStatus } from "./types";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AppData, CategoryFile, InboxItem, Project, WorkspaceRegistry } from "./types";
 
 type DragFile = File & {
   path?: string;
@@ -33,6 +39,12 @@ type AccentColor = "teal" | "blue" | "violet" | "orange";
 type SortMode = "name" | "time";
 type FileScale = "compact" | "comfortable" | "large";
 
+// ── 彈窗狀態 ──────────────────────────────────────────────
+type DialogState =
+  | { type: "none" }
+  | { type: "rename-workspace"; workspaceId: string; currentName: string }
+  | { type: "delete-workspace"; workspaceId: string; name: string };
+
 const messages = {
   zh: {
     appName: "个人项目资料库",
@@ -44,7 +56,7 @@ const messages = {
     projectList: "项目列表",
     pinned: "置顶",
     openProjectFolder: "打开项目根目录",
-    searchPlaceholder: "搜索项目、别名、标签、文件",
+    searchPlaceholder: "搜索项目、别名、标签、文件  Ctrl+K",
     importFiles: "导入文件",
     newProject: "新建项目",
     categories: "分类",
@@ -70,7 +82,9 @@ const messages = {
     accent: "主题色",
     light: "日间",
     dark: "夜间",
-    scale: "缩放"
+    scale: "缩放",
+    noRootWarning: "尚未设置工作目录，请先前往设置页面配置，再新建项目。",
+    goToSettings: "前往设置"
   },
   en: {
     appName: "Project Archive",
@@ -82,7 +96,7 @@ const messages = {
     projectList: "Project List",
     pinned: "Pinned",
     openProjectFolder: "Open project folder",
-    searchPlaceholder: "Search projects, aliases, tags, files",
+    searchPlaceholder: "Search projects, aliases, tags, files  Ctrl+K",
     importFiles: "Import",
     newProject: "New Project",
     categories: "Categories",
@@ -108,7 +122,9 @@ const messages = {
     accent: "Accent",
     light: "Light",
     dark: "Dark",
-    scale: "Scale"
+    scale: "Scale",
+    noRootWarning: "Workspace root is not set. Please configure it in Settings before creating projects.",
+    goToSettings: "Go to Settings"
   }
 } as const;
 
@@ -140,12 +156,16 @@ function formatSize(size: number) {
 }
 
 function contains(project: Project, query: string) {
-  const text = [project.name, project.alias, project.status, project.path, ...project.tags].join(" ").toLowerCase();
+  const text = [project.name, project.alias, project.path, ...project.tags].join(" ").toLowerCase();
   return text.includes(query.toLowerCase());
 }
 
 export function App() {
   const [data, setData] = useState<AppData>(emptyData);
+  const [registry, setRegistry] = useState<WorkspaceRegistry | null>(null);
+  const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
+  const [wsCreating, setWsCreating] = useState(false);
+  const [wsNewName, setWsNewName] = useState("");
   const [view, setView] = useState<View>("home");
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -154,9 +174,13 @@ export function App() {
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("archive.language") as Language) || "zh");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => (localStorage.getItem("archive.theme") as ThemeMode) || "light");
   const [accentColor, setAccentColor] = useState<AccentColor>(() => (localStorage.getItem("archive.accent") as AccentColor) || "teal");
+  const [dialog, setDialog] = useState<DialogState>({ type: "none" });
+  const [categoryCollapsed, setCategoryCollapsed] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const t = messages[language];
 
   useEffect(() => {
+    window.archiveApi.listWorkspaces().then(setRegistry);
     window.archiveApi.getData().then(setData);
   }, []);
 
@@ -173,11 +197,32 @@ export function App() {
     }
   }, [data.projects, activeProjectId]);
 
+  // 全局快捷鍵：Ctrl+K 聚焦搜索，Ctrl+N 新建項目
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setView("search");
+      }
+      if (e.ctrlKey && e.key === "n") {
+        e.preventDefault();
+        if (data.settings.workspaceRoot) setNewProjectOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [data.settings.workspaceRoot]);
+
   const activeProject = data.projects.find((project) => project.id === activeProjectId);
-  const sidebarProjects = [...data.projects].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", { numeric: true, sensitivity: "base" });
-  });
+
+  const sidebarProjects = useMemo(() => {
+    return [...data.projects].sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", { numeric: true, sensitivity: "base" });
+    });
+  }, [data.projects, language]);
+
   const recentProjects = [...data.projects]
     .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt).getTime())
     .slice(0, 6);
@@ -226,6 +271,49 @@ export function App() {
     setSelectedInbox([]);
   }
 
+  async function handleSwitchWorkspace(workspaceId: string) {
+    const newData = await window.archiveApi.switchWorkspace(workspaceId);
+    setData(newData);
+    setRegistry(await window.archiveApi.listWorkspaces());
+    setView("home");
+    setActiveProjectId(null);
+    setWsDropdownOpen(false);
+  }
+
+  async function handleCreateWorkspace() {
+    if (!wsNewName.trim()) {
+      setWsCreating(true);
+      return;
+    }
+    const newRegistry = await window.archiveApi.createWorkspace(wsNewName.trim());
+    setRegistry(newRegistry);
+    setData(await window.archiveApi.getData());
+    setView("settings");
+    setActiveProjectId(null);
+    setWsDropdownOpen(false);
+    setWsCreating(false);
+    setWsNewName("");
+  }
+
+  // ── 資料庫操作（用內嵌彈窗替代 prompt/confirm）──────────
+  function openRenameDialog(workspaceId: string, currentName: string) {
+    setDialog({ type: "rename-workspace", workspaceId, currentName });
+  }
+
+  function openDeleteDialog(workspaceId: string, name: string) {
+    setDialog({ type: "delete-workspace", workspaceId, name });
+  }
+
+  async function handleRenameConfirm(workspaceId: string, newName: string) {
+    setRegistry(await window.archiveApi.renameWorkspace(workspaceId, newName.trim()));
+    setDialog({ type: "none" });
+  }
+
+  async function handleDeleteConfirm(workspaceId: string) {
+    setRegistry(await window.archiveApi.deleteWorkspace(workspaceId));
+    setDialog({ type: "none" });
+  }
+
   const navigation = [
     { id: "home" as const, label: t.home, icon: Home },
     { id: "projects" as const, label: t.projects, icon: FolderKanban },
@@ -234,17 +322,16 @@ export function App() {
     { id: "settings" as const, label: t.settings, icon: Settings }
   ];
 
+  const hasRoot = Boolean(data.settings.workspaceRoot);
+
   return (
     <div className={`app-shell theme-${themeMode} accent-${accentColor}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <Archive size={22} />
+            <Archive size={20} />
           </div>
-          <div>
-            <strong>{t.appName}</strong>
-            <span>Project Archive</span>
-          </div>
+          <span className="brand-name">{registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}</span>
         </div>
 
         <nav>
@@ -262,7 +349,7 @@ export function App() {
         <div className="side-section">
           <div className="side-title">{t.projectList}</div>
           {sidebarProjects.length === 0 ? (
-            <p className="muted small">{language === "zh" ? "还没有项目。" : "No projects yet."}</p>
+            <p className="muted small">{language === "zh" ? "沒有匹配的項目。" : "No matching projects."}</p>
           ) : (
             sidebarProjects.map((project) => (
               <div className={project.id === activeProject?.id ? "project-shortcut-row active" : "project-shortcut-row"} key={project.id}>
@@ -290,13 +377,69 @@ export function App() {
             ))
           )}
         </div>
+
+        {/* 工作空間切換（底部） */}
+        <div className="sidebar-footer">
+          <button className="sidebar-ws-btn" onClick={() => setWsDropdownOpen(!wsDropdownOpen)}>
+            <Database size={14} />
+            <span>{registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}</span>
+            <ChevronDown size={13} />
+          </button>
+        </div>
+
+        {wsDropdownOpen && registry && (
+          <div className="workspace-popover">
+            <div className="popover-header">切換資料庫</div>
+            {registry.workspaces.map((ws) => (
+              <button
+                className={ws.id === registry.activeWorkspaceId ? "ws-item active" : "ws-item"}
+                key={ws.id}
+                onClick={() => { handleSwitchWorkspace(ws.id); setWsDropdownOpen(false); }}
+              >
+                <Archive size={15} />
+                <span>{ws.name}</span>
+                {ws.id === registry.activeWorkspaceId && <span className="ws-check"><Check size={13} /></span>}
+              </button>
+            ))}
+            <button className="ws-item ws-create" onClick={() => { setWsCreating(true); }}>
+              <Plus size={15} />
+              <span>新建資料庫</span>
+            </button>
+            {wsCreating && (
+              <div className="ws-create-input">
+                <input
+                  value={wsNewName}
+                  onChange={(e) => setWsNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCreateWorkspace();
+                    if (e.key === "Escape") { setWsCreating(false); setWsNewName(""); }
+                  }}
+                  placeholder="輸入資料庫名稱"
+                  autoFocus
+                />
+                <button className="primary compact-button" onClick={handleCreateWorkspace} disabled={!wsNewName.trim()}>
+                  確定
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </aside>
 
       <main className="main">
+        {/* 工作目錄未設置提示橫幅 */}
+        {!hasRoot && (
+          <div className="warning-banner">
+            <span>{t.noRootWarning}</span>
+            <button className="warning-banner-btn" onClick={() => setView("settings")}>{t.goToSettings}</button>
+          </div>
+        )}
+
         <header className="topbar">
           <div className="command-search">
             <Search size={18} />
             <input
+              ref={searchInputRef}
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -324,7 +467,12 @@ export function App() {
               <FileInput size={17} />
               {t.importFiles}
             </button>
-            <button className="primary" onClick={() => setNewProjectOpen(true)}>
+            <button
+              className="primary"
+              onClick={() => setNewProjectOpen(true)}
+              disabled={!hasRoot}
+              title={hasRoot ? undefined : t.noRootWarning}
+            >
               <Plus size={17} />
               {t.newProject}
             </button>
@@ -336,7 +484,7 @@ export function App() {
             data={data}
             recentProjects={recentProjects}
             onOpenProject={openProject}
-            onNewProject={() => setNewProjectOpen(true)}
+            onNewProject={() => { if (hasRoot) setNewProjectOpen(true); else setView("settings"); }}
             onImport={addInboxFiles}
           />
         )}
@@ -348,6 +496,8 @@ export function App() {
             onDataChange={setData}
             language={language}
             t={t}
+            categoryCollapsed={categoryCollapsed}
+            onCategoryCollapsedChange={setCategoryCollapsed}
           />
         )}
 
@@ -358,6 +508,7 @@ export function App() {
             onSelectedChange={setSelectedInbox}
             onImport={addInboxFiles}
             onOrganize={organizeInbox}
+            onDataChange={setData}
           />
         )}
 
@@ -370,7 +521,17 @@ export function App() {
           />
         )}
 
-        {view === "settings" && <SettingsView data={data} setData={setData} />}
+        {view === "settings" && (
+          <SettingsView
+            data={data}
+            setData={setData}
+            registry={registry}
+            setRegistry={setRegistry}
+            onRename={openRenameDialog}
+            onDelete={openDeleteDialog}
+            onSwitch={(id) => handleSwitchWorkspace(id)}
+          />
+        )}
       </main>
 
       {newProjectOpen && (
@@ -384,9 +545,29 @@ export function App() {
           }}
         />
       )}
+
+      {/* 重命名資料庫彈窗 */}
+      {dialog.type === "rename-workspace" && (
+        <RenameWorkspaceDialog
+          currentName={dialog.currentName}
+          onConfirm={(name) => handleRenameConfirm(dialog.workspaceId, name)}
+          onClose={() => setDialog({ type: "none" })}
+        />
+      )}
+
+      {/* 刪除資料庫確認彈窗 */}
+      {dialog.type === "delete-workspace" && (
+        <ConfirmDeleteDialog
+          name={dialog.name}
+          onConfirm={() => handleDeleteConfirm(dialog.workspaceId)}
+          onClose={() => setDialog({ type: "none" })}
+        />
+      )}
     </div>
   );
 }
+
+// ── HomeView ──────────────────────────────────────────────
 
 function HomeView({
   data,
@@ -425,7 +606,7 @@ function HomeView({
         <Metric label="項目數量" value={String(data.projects.length)} />
         <Metric label="待整理文件" value={String(data.inbox.length)} />
         <Metric label="置頂項目" value={String(data.projects.filter((project) => project.pinned).length)} />
-        <Metric label="工作目錄" value={data.settings.workspaceRoot || "未設置"} compact />
+        <Metric label="工作目錄" value={data.settings.workspaceRoot || "未設置"} compact tooltip={data.settings.workspaceRoot} />
       </div>
 
       <div className="split">
@@ -460,18 +641,24 @@ function HomeView({
   );
 }
 
+// ── ProjectsView ──────────────────────────────────────────
+
 function ProjectsView({
   data,
   activeProject,
   onDataChange,
   language,
-  t
+  t,
+  categoryCollapsed,
+  onCategoryCollapsedChange
 }: {
   data: AppData;
   activeProject: Project;
   onDataChange: (data: AppData) => void;
   language: Language;
   t: (typeof messages)[Language];
+  categoryCollapsed: boolean;
+  onCategoryCollapsedChange: (v: boolean) => void;
 }) {
   const [selectedCategory, setSelectedCategory] = useState(data.settings.categories[0] || "");
   const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
@@ -481,10 +668,9 @@ function ProjectsView({
   const [fileScale, setFileScale] = useState<FileScale>("comfortable");
   const [newFolderName, setNewFolderName] = useState("");
 
+  // 切換項目時重置狀態
   useEffect(() => {
-    if (!data.settings.categories.includes(selectedCategory)) {
-      setSelectedCategory(data.settings.categories[0] || "");
-    }
+    setSelectedCategory(data.settings.categories[0] || "");
     setFileFilter("");
   }, [activeProject.id]);
 
@@ -547,6 +733,7 @@ function ProjectsView({
     .filter((file) => file.isDirectory)
     .map((folder) => ({ ...folder, children: sortFiles((folder.children || []).filter(matchesFilter)) }));
 
+  // 分類計數：直接讀取 listCategoryFiles，此處用 recentFiles 作參考值並標注 "近似"
   const categoryCounts = data.settings.categories.reduce<Record<string, number>>((acc, category) => {
     acc[category] = (activeProject.recentFiles || []).filter((file) => file.category === category).length;
     return acc;
@@ -555,9 +742,18 @@ function ProjectsView({
   return (
     <section className="page projects-page">
       <div className="project-detail">
-        <div className="workspace-grid">
-          <div className="project-list-panel category-side-panel">
-            <div className="panel-mini-title">{t.categories}</div>
+        <div className={`workspace-grid ${categoryCollapsed ? "category-collapsed" : ""}`}>
+          <div className={`project-list-panel category-side-panel ${categoryCollapsed ? "collapsed" : ""}`}>
+            <div className="panel-mini-title">
+              {!categoryCollapsed && t.categories}
+              <button
+                className="collapse-btn"
+                onClick={() => onCategoryCollapsedChange(!categoryCollapsed)}
+                title={categoryCollapsed ? "展开分类" : "收起分类"}
+              >
+                {categoryCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+              </button>
+            </div>
             <div className="category-list">
               {data.settings.categories.map((category) => (
                 <button
@@ -569,7 +765,7 @@ function ProjectsView({
                     <FolderKanban size={18} />
                     {category}
                   </span>
-                  <small>{categoryCounts[category] || 0}</small>
+                  {categoryCounts[category] > 0 && <small>{categoryCounts[category]}</small>}
                 </button>
               ))}
             </div>
@@ -680,6 +876,8 @@ function ProjectsView({
   );
 }
 
+// ── FileSection ───────────────────────────────────────────
+
 function FileSection({
   title,
   files,
@@ -716,18 +914,22 @@ function FileSection({
   );
 }
 
+// ── InboxView ─────────────────────────────────────────────
+
 function InboxView({
   data,
   selected,
   onSelectedChange,
   onImport,
-  onOrganize
+  onOrganize,
+  onDataChange
 }: {
   data: AppData;
   selected: string[];
   onSelectedChange: (ids: string[]) => void;
   onImport: () => void;
   onOrganize: (projectId: string, category: string, itemIds?: string[]) => void;
+  onDataChange: (data: AppData) => void;
 }) {
   const [projectId, setProjectId] = useState(data.projects[0]?.id || "");
   const [category, setCategory] = useState(data.settings.categories[0] || "");
@@ -740,6 +942,25 @@ function InboxView({
     onSelectedChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
   }
 
+  async function handleDeleteSelected() {
+    if (selected.length === 0) return;
+    const next = await window.archiveApi.deleteInboxItems(selected);
+    onDataChange(next);
+    onSelectedChange([]);
+  }
+
+  async function handleDeleteOne(id: string) {
+    const next = await window.archiveApi.deleteInboxItems([id]);
+    onDataChange(next);
+    onSelectedChange(selected.filter((s) => s !== id));
+  }
+
+  async function handleClearAll() {
+    const next = await window.archiveApi.clearInbox();
+    onDataChange(next);
+    onSelectedChange([]);
+  }
+
   return (
     <section className="page">
       <div className="page-header">
@@ -748,10 +969,18 @@ function InboxView({
           <h1>收件箱</h1>
           <p>先把散落文件放進來，再批量歸入項目和分類。</p>
         </div>
-        <button className="primary" onClick={onImport}>
-          <FileInput size={17} />
-          導入文件
-        </button>
+        <div className="hero-actions">
+          <button className="primary" onClick={onImport}>
+            <FileInput size={17} />
+            導入文件
+          </button>
+          {data.inbox.length > 0 && (
+            <button className="secondary" onClick={handleClearAll}>
+              <Trash2 size={17} />
+              清空全部
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="organize-bar">
@@ -761,9 +990,17 @@ function InboxView({
         <select value={category} onChange={(event) => setCategory(event.target.value)}>
           {data.settings.categories.map((item) => <option value={item} key={item}>{item}</option>)}
         </select>
-        <button className="primary" disabled={selected.length === 0 || !projectId} onClick={() => onOrganize(projectId, category)}>
-          歸類已選 {selected.length}
-        </button>
+        <div className="organize-bar-actions">
+          <button className="primary" disabled={selected.length === 0 || !projectId} onClick={() => onOrganize(projectId, category)}>
+            歸類已選 {selected.length}
+          </button>
+          {selected.length > 0 && (
+            <button className="secondary compact-button" onClick={handleDeleteSelected}>
+              <Trash2 size={15} />
+              刪除已選
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="inbox-table">
@@ -790,6 +1027,14 @@ function InboxView({
                 >
                   套用推薦
                 </button>
+                <button
+                  className="icon-button inbox-delete-btn"
+                  onClick={() => handleDeleteOne(item.id)}
+                  title="從收件箱移除"
+                  aria-label="刪除"
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
             );
           })
@@ -798,6 +1043,8 @@ function InboxView({
     </section>
   );
 }
+
+// ── SearchView ────────────────────────────────────────────
 
 function SearchView({
   query,
@@ -865,7 +1112,25 @@ function SearchView({
   );
 }
 
-function SettingsView({ data, setData }: { data: AppData; setData: (data: AppData) => void }) {
+// ── SettingsView ──────────────────────────────────────────
+
+function SettingsView({
+  data,
+  setData,
+  registry,
+  setRegistry,
+  onRename,
+  onDelete,
+  onSwitch
+}: {
+  data: AppData;
+  setData: (data: AppData) => void;
+  registry: WorkspaceRegistry | null;
+  setRegistry: (r: WorkspaceRegistry) => void;
+  onRename: (workspaceId: string, currentName: string) => void;
+  onDelete: (workspaceId: string, name: string) => void;
+  onSwitch: (workspaceId: string) => void;
+}) {
   async function chooseRoot() {
     const root = await window.archiveApi.selectRoot();
     if (root) setData(await window.archiveApi.updateRoot(root));
@@ -883,11 +1148,39 @@ function SettingsView({ data, setData }: { data: AppData; setData: (data: AppDat
       <Panel title="工作目錄" icon={<FolderOpen size={18} />}>
         <div className="setting-row">
           <div>
-            <strong>{data.settings.workspaceRoot || "未設置"}</strong>
+            <strong title={data.settings.workspaceRoot || undefined}>{data.settings.workspaceRoot || "未設置"}</strong>
             <p>新建項目時，會在這個目錄下生成項目資料夾和標準分類。</p>
           </div>
           <button className="secondary" onClick={chooseRoot}>更換目錄</button>
         </div>
+      </Panel>
+      <Panel title="資料庫管理" icon={<Archive size={18} />}>
+        {registry?.workspaces.map((ws) => (
+          <div className="setting-row" key={ws.id}>
+            <div>
+              <strong>{ws.name}</strong>
+              {ws.id === registry.activeWorkspaceId && <span className="badge">當前</span>}
+            </div>
+            <div className="setting-actions">
+              {ws.id !== registry.activeWorkspaceId && (
+                <button className="secondary compact-button" onClick={() => onSwitch(ws.id)}>
+                  <Check size={14} />
+                  切換
+                </button>
+              )}
+              <button className="secondary compact-button" onClick={() => onRename(ws.id, ws.name)}>
+                <Pencil size={14} />
+                重命名
+              </button>
+              {ws.id !== registry.activeWorkspaceId && (
+                <button className="secondary compact-button" onClick={() => onDelete(ws.id, ws.name)}>
+                  <Trash2 size={14} />
+                  刪除
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
       </Panel>
       <Panel title="默認分類模板" icon={<Tags size={18} />}>
         <div className="category-grid">
@@ -897,6 +1190,8 @@ function SettingsView({ data, setData }: { data: AppData; setData: (data: AppDat
     </section>
   );
 }
+
+// ── NewProjectDialog ──────────────────────────────────────
 
 function NewProjectDialog({
   root,
@@ -910,7 +1205,6 @@ function NewProjectDialog({
   const [name, setName] = useState("");
   const [alias, setAlias] = useState("");
   const [tags, setTags] = useState("");
-  const [status, setStatus] = useState<ProjectStatus>("進行中");
   const [pinned, setPinned] = useState(true);
 
   async function submit(event: FormEvent) {
@@ -920,7 +1214,6 @@ function NewProjectDialog({
       name: name.trim(),
       alias: alias.trim(),
       tags: tags.split(/[，,\s]+/).map((tag) => tag.trim()).filter(Boolean),
-      status,
       pinned,
       root
     });
@@ -943,14 +1236,6 @@ function NewProjectDialog({
           標籤
           <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="例如：HIS 支付 2026" />
         </label>
-        <label>
-          狀態
-          <select value={status} onChange={(event) => setStatus(event.target.value as ProjectStatus)}>
-            <option>進行中</option>
-            <option>待處理</option>
-            <option>已歸檔</option>
-          </select>
-        </label>
         <label className="check-line">
           <input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} />
           建立後置頂
@@ -964,12 +1249,75 @@ function NewProjectDialog({
   );
 }
 
+// ── RenameWorkspaceDialog ─────────────────────────────────
+
+function RenameWorkspaceDialog({
+  currentName,
+  onConfirm,
+  onClose
+}: {
+  currentName: string;
+  onConfirm: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(currentName);
+
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || name.trim() === currentName) { onClose(); return; }
+    onConfirm(name.trim());
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <form className="modal" onSubmit={submit}>
+        <h2>重命名資料庫</h2>
+        <label>
+          名稱
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <div className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose}>取消</button>
+          <button className="primary" type="submit" disabled={!name.trim()}>確定</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ── ConfirmDeleteDialog ───────────────────────────────────
+
+function ConfirmDeleteDialog({
+  name,
+  onConfirm,
+  onClose
+}: {
+  name: string;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <h2>刪除資料庫</h2>
+        <p>確定刪除「<strong>{name}</strong>」嗎？此操作無法撤銷，資料庫數據將永久丟失。</p>
+        <div className="modal-actions">
+          <button className="secondary" onClick={onClose}>取消</button>
+          <button className="primary danger" onClick={onConfirm}>確認刪除</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 小組件 ────────────────────────────────────────────────
+
 function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void }) {
   return (
     <button className="project-card" onClick={onOpen}>
       <div>
         <strong>{project.name}</strong>
-        <span>{project.alias || project.status}</span>
+        <span>{project.alias}</span>
       </div>
       <div className="tag-row">
         {project.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>{tag}</span>)}
@@ -979,11 +1327,11 @@ function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void
   );
 }
 
-function Metric({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) {
+function Metric({ label, value, compact = false, tooltip }: { label: string; value: string; compact?: boolean; tooltip?: string }) {
   return (
     <div className={compact ? "metric compact" : "metric"}>
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={tooltip}>{value}</strong>
     </div>
   );
 }
