@@ -20,5 +20,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true
+  },
+  // Tauri uses file:// protocol, so use relative paths
+  base: "./",
+  test: {
+    globals: true,
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.{test,spec}.{ts,tsx}"]
   }
 });

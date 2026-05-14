@@ -6,10 +6,10 @@ import {
   ChevronRight,
   Clock3,
   Database,
-  FileInput,
-  FolderPlus,
+  Folder,
   FolderKanban,
   FolderOpen,
+  FolderPlus,
   Home,
   Inbox,
   Moon,
@@ -21,29 +21,49 @@ import {
   Sparkles,
   Star,
   Sun,
-  Tags,
   Trash2,
-  X
+  X,
+  Eye,
+  Download,
+  Copy,
+  LayoutList,
+  LayoutGrid
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppData, CategoryFile, InboxItem, Project, WorkspaceRegistry } from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "./api";
+import type { AppData, CategoryFile, Project, TrashItem, WorkspaceRegistry } from "./types";
+import { HomeView, TrashView, InboxView, SearchView, SettingsView } from "./views";
+import { ProjectsView } from "./components/projects/ProjectsView";
+import {
+  ConfirmDeleteDialog,
+  NewProjectDialog,
+  RenameWorkspaceDialog,
+  MigrateRootDialog,
+  TrashConfirmDialog,
+  CategoryEditModal,
+  PreviewModal,
+  ConfirmDangerDialog
+} from "./dialogs";
+import { storage } from "./utils";
 
-type DragFile = File & {
-  path?: string;
-};
+// ── 類型定義 ──────────────────────────────────────────────
 
-type View = "home" | "projects" | "inbox" | "search" | "settings";
+type View = "home" | "projects" | "inbox" | "search" | "settings" | "trash" | "category-edit";
 type Language = "zh" | "en";
 type ThemeMode = "light" | "dark";
 type AccentColor = "teal" | "blue" | "violet" | "orange";
-type SortMode = "name" | "time";
+type SortMode = "name" | "time" | "size";
+type SortDirection = "asc" | "desc";
 type FileScale = "compact" | "comfortable" | "large";
+type FileViewMode = "list" | "grid";
 
-// ── 彈窗狀態 ──────────────────────────────────────────────
 type DialogState =
   | { type: "none" }
   | { type: "rename-workspace"; workspaceId: string; currentName: string }
-  | { type: "delete-workspace"; workspaceId: string; name: string };
+  | { type: "delete-workspace"; workspaceId: string; name: string }
+  | { type: "migrate-root"; oldRoot: string; newRoot: string; fileCount: number };
+
+// ── 翻譯 ──────────────────────────────────────────────────
 
 const messages = {
   zh: {
@@ -66,6 +86,7 @@ const messages = {
     newFolder: "新建目录",
     sortByName: "按名称",
     sortByTime: "按时间",
+    sortBySize: "按大小",
     name: "名称",
     modifiedAt: "修改时间",
     size: "大小",
@@ -77,6 +98,15 @@ const messages = {
     folder: "目录",
     rootFiles: "分类根目录",
     folderNamePrompt: "请输入新目录名称",
+    deleteFile: "删除",
+    copyFile: "复制",
+    pasteFile: "粘贴",
+    openFile: "打开",
+    previewFile: "预览",
+    pasteTo: "粘贴到",
+    confirmDelete: "确定要删除此文件吗？",
+    expand: "展开",
+    collapse: "收起",
     language: "语言",
     theme: "主题",
     accent: "主题色",
@@ -84,7 +114,84 @@ const messages = {
     dark: "夜间",
     scale: "缩放",
     noRootWarning: "尚未设置工作目录，请先前往设置页面配置，再新建项目。",
-    goToSettings: "前往设置"
+    goToSettings: "前往设置",
+    migrateTitle: "迁移工作目录",
+    migrateBody: "原目录中有 {count} 个文件/文件夹，是否迁移到新目录？",
+    migrateConfirm: "迁移并删除原目录",
+    migrateSkip: "仅切换目录",
+    migrateCancel: "取消",
+    autostart: "开机启动",
+    autostartDesc: "登录 Windows 时自动启动应用",
+    trash: "回收站",
+    emptyTrash: "清空回收站",
+    emptyTrashConfirm: "确定要清空回收站吗？此操作不可恢复。",
+    restoreProject: "恢复",
+    permanentlyDelete: "永久删除",
+    trashEmpty: "回收站是空的",
+    trashEmptyBody: "删除的项目会出现在这里",
+    deletedAt: "删除时间",
+    workspaceSwitch: "切换资料库",
+    newDatabase: "新建资料库",
+    databaseNamePlaceholder: "输入资料库名称",
+    confirm: "确认",
+    deleteFileConfirm: "确定要删除此文件吗？此操作不可恢复。",
+    // HomeView
+    heroEyebrow: "项目入口管理器",
+    heroTitle: "不用再一层层点文件夹。",
+    heroBody: "用项目、别名、标签和最近访问，把零散资料快速归位并找回来。",
+    metricProjectCount: "项目数量",
+    metricInboxCount: "待整理文件",
+    metricPinnedCount: "置顶项目",
+    metricWorkspaceRoot: "工作目录",
+    metricRootNotSet: "未设置",
+    recentProjects: "最近项目",
+    recentActivity: "最近操作",
+    emptyProjectTitle: "还没有项目",
+    emptyProjectBody: "先新建一个项目，软件会自动建立标准分类文件夹。",
+    emptyActivityTitle: "暂无操作记录",
+    emptyActivityBody: "新建项目、导入文件和归类文件后会显示在这里。",
+    importToInbox: "加入收件箱",
+    // InboxView
+    inboxEyebrow: "临时入口",
+    inboxTitle: "收件箱",
+    inboxBody: "先把散落文件放进来，再批量归入项目和分类。",
+    organizeSelected: "归类已选",
+    deleteSelected: "删除已选",
+    clearAll: "清空全部",
+    applyRecommend: "套用推荐",
+    noMatchProject: "未匹配项目",
+    inboxEmptyTitle: "收件箱是空的",
+    inboxEmptyBody: "导入桌面、下载或聊天软件中的文件后，可以在这里批量整理。",
+    removeFromInbox: "从收件箱移除",
+    // SearchView
+    searchEyebrow: "快速入口",
+    searchTitle: "全局搜索",
+    searchBody: "按项目名、简称、标签或文件名搜索，不需要记住文件夹路径。",
+    searchPlaceholderLarge: "例如：支付、HIS、退款、接口、功能书",
+    searchStartTitle: "输入关键词开始搜索",
+    searchStartBody: "建议给项目设置别名和标签，搜索会更接近你的记忆方式。",
+    searchProjects: "项目",
+    searchRecentFiles: "最近文件",
+    searchInbox: "收件箱",
+    // SettingsView
+    settingsTitle: "设置",
+    settingsBody: "所有资料都保存在本机，项目文件夹由你指定。",
+    appearance: "外观",
+    themeLabel: "主题",
+    accentLabel: "强调色",
+    general: "通用",
+    storage: "存储",
+    workspaceRoot: "工作目录",
+    workspaceRootDesc: "新建项目时，会在这个目录下生成项目文件夹。",
+    workspaceRootNotSet: "未设置",
+    changeRoot: "更换",
+    categoryManagement: "分类",
+    editCategory: "编辑",
+    database: "数据库",
+    currentDatabase: "当前",
+    switchDatabase: "切换",
+    renameDatabase: "重命名",
+    deleteDatabase: "删除"
   },
   en: {
     appName: "Project Archive",
@@ -106,6 +213,7 @@ const messages = {
     newFolder: "New Folder",
     sortByName: "Name",
     sortByTime: "Time",
+    sortBySize: "Size",
     name: "Name",
     modifiedAt: "Modified",
     size: "Size",
@@ -117,6 +225,15 @@ const messages = {
     folder: "Folder",
     rootFiles: "Category Root",
     folderNamePrompt: "Enter a new folder name",
+    deleteFile: "Delete",
+    copyFile: "Copy",
+    pasteFile: "Paste",
+    openFile: "Open",
+    previewFile: "Preview",
+    pasteTo: "Paste to",
+    confirmDelete: "Are you sure you want to delete this file?",
+    expand: "Expand",
+    collapse: "Collapse",
     language: "Language",
     theme: "Theme",
     accent: "Accent",
@@ -124,9 +241,88 @@ const messages = {
     dark: "Dark",
     scale: "Scale",
     noRootWarning: "Workspace root is not set. Please configure it in Settings before creating projects.",
-    goToSettings: "Go to Settings"
+    goToSettings: "Go to Settings",
+    migrateTitle: "Migrate Workspace",
+    migrateBody: "There are {count} files/folders in the old directory. Migrate to new directory?",
+    migrateConfirm: "Migrate & Delete Old",
+    migrateSkip: "Switch Only",
+    migrateCancel: "Cancel",
+    autostart: "Auto Start",
+    autostartDesc: "Start automatically when Windows logs in",
+    trash: "Trash",
+    emptyTrash: "Empty Trash",
+    emptyTrashConfirm: "Are you sure you want to empty the trash? This action cannot be undone.",
+    restoreProject: "Restore",
+    permanentlyDelete: "Delete Permanently",
+    trashEmpty: "Trash is empty",
+    trashEmptyBody: "Deleted projects will appear here",
+    deletedAt: "Deleted At",
+    workspaceSwitch: "Switch Database",
+    newDatabase: "New Database",
+    databaseNamePlaceholder: "Enter database name",
+    confirm: "Confirm",
+    deleteFileConfirm: "Are you sure you want to delete this file? This action cannot be undone.",
+    // HomeView
+    heroEyebrow: "Project Entry Manager",
+    heroTitle: "No more clicking through folders.",
+    heroBody: "Use projects, aliases, tags, and recent access to quickly organize and find your files.",
+    metricProjectCount: "Projects",
+    metricInboxCount: "Inbox items",
+    metricPinnedCount: "Pinned",
+    metricWorkspaceRoot: "Workspace",
+    metricRootNotSet: "Not set",
+    recentProjects: "Recent projects",
+    recentActivity: "Recent activity",
+    emptyProjectTitle: "No projects yet",
+    emptyProjectBody: "Create a project and the app will set up standard category folders for you.",
+    emptyActivityTitle: "No activity yet",
+    emptyActivityBody: "Activities like creating projects and importing files will appear here.",
+    importToInbox: "Import to Inbox",
+    // InboxView
+    inboxEyebrow: "Quick Drop",
+    inboxTitle: "Inbox",
+    inboxBody: "Drop scattered files here first, then batch-organize into projects and categories.",
+    organizeSelected: "Organize",
+    deleteSelected: "Delete selected",
+    clearAll: "Clear all",
+    applyRecommend: "Apply suggestion",
+    noMatchProject: "No matching project",
+    inboxEmptyTitle: "Inbox is empty",
+    inboxEmptyBody: "Import files from your desktop, downloads, or chat apps to organize them here.",
+    removeFromInbox: "Remove from inbox",
+    // SearchView
+    searchEyebrow: "Quick Access",
+    searchTitle: "Global Search",
+    searchBody: "Search by project name, alias, tag, or file name — no need to remember folder paths.",
+    searchPlaceholderLarge: "e.g. payment, API, refund, interface, spec",
+    searchStartTitle: "Type a keyword to start searching",
+    searchStartBody: "Setting aliases and tags on projects helps search match your memory better.",
+    searchProjects: "Projects",
+    searchRecentFiles: "Recent files",
+    searchInbox: "Inbox",
+    // SettingsView
+    settingsTitle: "Settings",
+    settingsBody: "All data is stored locally. Project folders are determined by you.",
+    appearance: "Appearance",
+    themeLabel: "Theme",
+    accentLabel: "Accent color",
+    general: "General",
+    storage: "Storage",
+    workspaceRoot: "Workspace root",
+    workspaceRootDesc: "New projects will create folders under this directory.",
+    workspaceRootNotSet: "Not set",
+    changeRoot: "Change",
+    categoryManagement: "Categories",
+    editCategory: "Edit",
+    database: "Database",
+    currentDatabase: "Current",
+    switchDatabase: "Switch",
+    renameDatabase: "Rename",
+    deleteDatabase: "Delete"
   }
 } as const;
+
+type Messages = typeof messages.zh;
 
 const emptyData: AppData = {
   projects: [],
@@ -138,83 +334,59 @@ const emptyData: AppData = {
   }
 };
 
-function formatDate(value: string | null) {
-  if (!value) return "暫無";
-  return new Intl.DateTimeFormat("zh-Hant", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
-}
-
-function formatSize(size: number) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
-  return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
-function contains(project: Project, query: string) {
-  const text = [project.name, project.alias, project.path, ...project.tags].join(" ").toLowerCase();
-  return text.includes(query.toLowerCase());
-}
+// ── 主應用組件 ─────────────────────────────────────────────
 
 export function App() {
+  // 狀態
   const [data, setData] = useState<AppData>(emptyData);
   const [registry, setRegistry] = useState<WorkspaceRegistry | null>(null);
+  const [view, setView] = useState<View>("home");
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [language, setLanguage] = useState<Language>(() => storage.get("archive.language", "zh" as Language));
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => storage.get("archive.theme", "light" as ThemeMode));
+  const [accentColor, setAccentColor] = useState<AccentColor>(() => storage.get("archive.accent", "teal" as AccentColor));
+  const [dialog, setDialog] = useState<DialogState>({ type: "none" });
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
+  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
+  const [copiedFile, setCopiedFile] = useState<{ path: string; name: string } | null>(null);
+  const [previewFile, setPreviewFile] = useState<{
+    path: string;
+    name: string;
+    content?: string;
+    loading: boolean;
+    error?: string;
+    info?: { ext: string; size: number; is_image: boolean };
+  } | null>(null);
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
   const [wsCreating, setWsCreating] = useState(false);
   const [wsNewName, setWsNewName] = useState("");
-  const [view, setView] = useState<View>("home");
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
-  const [language, setLanguage] = useState<Language>(() => (localStorage.getItem("archive.language") as Language) || "zh");
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => (localStorage.getItem("archive.theme") as ThemeMode) || "light");
-  const [accentColor, setAccentColor] = useState<AccentColor>(() => (localStorage.getItem("archive.accent") as AccentColor) || "teal");
-  const [dialog, setDialog] = useState<DialogState>({ type: "none" });
-  const [categoryCollapsed, setCategoryCollapsed] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const t = messages[language];
+  // 分类管理
+  const [categoryEditOpen, setCategoryEditOpen] = useState(false);
+  const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(null);
+  const [categoryNewName, setCategoryNewName] = useState("");
 
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const t = messages[language] as Messages;
+
+  // 初始化
   useEffect(() => {
-    window.archiveApi.listWorkspaces().then(setRegistry);
-    window.archiveApi.getData().then(setData);
+    api.listWorkspaces().then(setRegistry);
+    api.getData().then(setData);
+    api.getTrashItems().then(setTrashItems);
   }, []);
 
+  // 保存偏好
   useEffect(() => {
-    localStorage.setItem("archive.language", language);
-    localStorage.setItem("archive.theme", themeMode);
-    localStorage.setItem("archive.accent", accentColor);
+    storage.set("archive.language", language);
+    storage.set("archive.theme", themeMode);
+    storage.set("archive.accent", accentColor);
   }, [language, themeMode, accentColor]);
 
-  useEffect(() => {
-    if (data.projects.length === 0) return;
-    if (!activeProjectId || !data.projects.some((project) => project.id === activeProjectId)) {
-      setActiveProjectId(data.projects[0].id);
-    }
-  }, [data.projects, activeProjectId]);
-
-  // 全局快捷鍵：Ctrl+K 聚焦搜索，Ctrl+N 新建項目
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && e.key === "k") {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        setView("search");
-      }
-      if (e.ctrlKey && e.key === "n") {
-        e.preventDefault();
-        if (data.settings.workspaceRoot) setNewProjectOpen(true);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [data.settings.workspaceRoot]);
-
-  const activeProject = data.projects.find((project) => project.id === activeProjectId);
+  // 計算屬性
+  const activeProject = data.projects.find((p) => p.id === activeProjectId);
 
   const sidebarProjects = useMemo(() => {
     return [...data.projects].sort((a, b) => {
@@ -223,127 +395,210 @@ export function App() {
     });
   }, [data.projects, language]);
 
-  const recentProjects = [...data.projects]
-    .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt).getTime())
-    .slice(0, 6);
+  const recentProjects = useMemo(() => {
+    return [...data.projects]
+      .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt).getTime())
+      .slice(0, 6);
+  }, [data.projects]);
 
   const searchResults = useMemo(() => {
     const trimmed = query.trim();
-    if (!trimmed) return { projects: [], files: [], inbox: [] as InboxItem[] };
+    if (!trimmed) return { projects: [], files: [], inbox: [] as typeof data.inbox };
 
+    const text = trimmed.toLowerCase();
     const files = data.projects.flatMap((project) =>
       (project.recentFiles || [])
-        .filter((file) => `${file.name} ${file.category} ${project.name}`.toLowerCase().includes(trimmed.toLowerCase()))
+        .filter((file) => `${file.name} ${file.category} ${project.name}`.toLowerCase().includes(text))
         .map((file) => ({ ...file, projectName: project.name }))
     );
 
     return {
-      projects: data.projects.filter((project) => contains(project, trimmed)),
+      projects: data.projects.filter((p) =>
+        [p.name, p.alias, p.path, ...p.tags].some((s) => s.toLowerCase().includes(text))
+      ),
       files,
-      inbox: data.inbox.filter((item) => item.name.toLowerCase().includes(trimmed.toLowerCase()))
+      inbox: data.inbox.filter((item) => item.name.toLowerCase().includes(text))
     };
   }, [data, query]);
 
-  async function openProject(project: Project) {
+  // 快捷鍵
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        setView("search");
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // 業務方法
+  const openProject = useCallback(async (project: Project) => {
     setActiveProjectId(project.id);
     setView("projects");
-    setData(await window.archiveApi.markProjectOpened(project.id));
-  }
+    setData(await api.markProjectOpened(project.id));
+  }, []);
 
-  async function openProjectFolder(project: Project) {
-    setActiveProjectId(project.id);
-    setView("projects");
-    await window.archiveApi.openFolder(project.path);
-    setData(await window.archiveApi.markProjectOpened(project.id));
-  }
-
-  async function addInboxFiles() {
-    const files = await window.archiveApi.selectFiles();
+  const addInboxFiles = useCallback(async () => {
+    const files = await api.selectFiles();
     if (files.length > 0) {
-      setData(await window.archiveApi.addInboxFiles(files));
+      setData(await api.addInboxFiles(files));
       setView("inbox");
     }
-  }
+  }, []);
 
-  async function organizeInbox(projectId: string, category: string, itemIds = selectedInbox) {
+  const organizeInbox = useCallback(async (projectId: string, category: string, itemIds = selectedInbox) => {
     if (!projectId || itemIds.length === 0) return;
-    setData(await window.archiveApi.organizeInbox({ itemIds, projectId, category }));
+    setData(await api.organizeInbox({ itemIds, projectId, category }));
     setSelectedInbox([]);
-  }
+  }, [selectedInbox]);
 
-  async function handleSwitchWorkspace(workspaceId: string) {
-    const newData = await window.archiveApi.switchWorkspace(workspaceId);
-    setData(newData);
-    setRegistry(await window.archiveApi.listWorkspaces());
+  const handleSwitchWorkspace = useCallback(async (workspaceId: string) => {
+    setData(await api.switchWorkspace(workspaceId));
+    setRegistry(await api.listWorkspaces());
     setView("home");
     setActiveProjectId(null);
     setWsDropdownOpen(false);
-  }
+  }, []);
 
-  async function handleCreateWorkspace() {
+  const handleCreateWorkspace = useCallback(async () => {
     if (!wsNewName.trim()) {
       setWsCreating(true);
       return;
     }
-    const newRegistry = await window.archiveApi.createWorkspace(wsNewName.trim());
+    const newRegistry = await api.createWorkspace(wsNewName.trim());
     setRegistry(newRegistry);
-    setData(await window.archiveApi.getData());
+    setData(await api.getData());
     setView("settings");
     setActiveProjectId(null);
     setWsDropdownOpen(false);
     setWsCreating(false);
     setWsNewName("");
-  }
+  }, [wsNewName]);
 
-  // ── 資料庫操作（用內嵌彈窗替代 prompt/confirm）──────────
-  function openRenameDialog(workspaceId: string, currentName: string) {
-    setDialog({ type: "rename-workspace", workspaceId, currentName });
-  }
-
-  function openDeleteDialog(workspaceId: string, name: string) {
-    setDialog({ type: "delete-workspace", workspaceId, name });
-  }
-
-  async function handleRenameConfirm(workspaceId: string, newName: string) {
-    setRegistry(await window.archiveApi.renameWorkspace(workspaceId, newName.trim()));
+  const handleRenameConfirm = useCallback(async (workspaceId: string, newName: string) => {
+    setRegistry(await api.renameWorkspace(workspaceId, newName.trim()));
     setDialog({ type: "none" });
-  }
+  }, []);
 
-  async function handleDeleteConfirm(workspaceId: string) {
-    setRegistry(await window.archiveApi.deleteWorkspace(workspaceId));
+  const handleDeleteConfirm = useCallback(async (workspaceId: string) => {
+    setRegistry(await api.deleteWorkspace(workspaceId));
     setDialog({ type: "none" });
+  }, []);
+
+  const handleMigrateRoot = useCallback(async (oldRoot: string, newRoot: string, migrate: boolean) => {
+    setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
+    setDialog({ type: "none" });
+  }, []);
+
+  const handleDeleteProject = useCallback(async (projectId: string) => {
+    setData(await api.deleteProject(projectId));
+    setTrashItems(await api.getTrashItems());
+  }, []);
+
+  const handleRestoreProject = useCallback(async (trashItemId: string) => {
+    setData(await api.restoreProject(trashItemId));
+    setTrashItems(await api.getTrashItems());
+  }, []);
+
+  const handlePermanentDelete = useCallback(async (trashItemId: string) => {
+    await api.permanentlyDeleteTrashItem(trashItemId);
+    setTrashItems(await api.getTrashItems());
+  }, []);
+
+  const handleEmptyTrash = useCallback(async () => {
+    await api.emptyTrash();
+    setTrashItems([]);
+    setTrashConfirmOpen(false);
+  }, []);
+
+  // 分类管理
+  function openEditCategory(index: number, name: string) {
+    setCategoryEditing({ index, name });
+    setCategoryNewName(name);
   }
 
-  const navigation = [
-    { id: "home" as const, label: t.home, icon: Home },
-    { id: "projects" as const, label: t.projects, icon: FolderKanban },
-    { id: "inbox" as const, label: t.inbox, icon: Inbox },
-    { id: "search" as const, label: t.search, icon: Search },
-    { id: "settings" as const, label: t.settings, icon: Settings }
-  ];
+  function openAddCategory() {
+    setCategoryEditing(null);
+    setCategoryNewName("");
+    setCategoryEditOpen(true);
+  }
+
+  async function handleSaveCategory() {
+    const newName = categoryNewName.trim();
+    if (!newName) return;
+    const categories = data.settings.categories;
+    let newCategories: string[];
+    if (categoryEditing !== null) {
+      newCategories = [...categories];
+      newCategories[categoryEditing.index] = newName;
+    } else {
+      newCategories = [...categories, newName];
+    }
+    const updatedData = await api.updateCategories(newCategories);
+    setData(updatedData);
+    setCategoryEditOpen(false);
+    setCategoryEditing(null);
+    setCategoryNewName("");
+  }
+
+  async function handleDeleteCategory(index: number) {
+    const newCategories = data.settings.categories.filter((_, i) => i !== index);
+    const updatedData = await api.updateCategories(newCategories);
+    setData(updatedData);
+  }
+
+  const handlePreviewFile = useCallback(async (path: string, name: string) => {
+    setPreviewFile({ path, name, loading: true });
+    try {
+      const info = await api.getPreviewInfo(path);
+      if (info.is_image) {
+        const imageUrl = `file:///${path.replace(/\\/g, "/")}`;
+        setPreviewFile({ path, name, loading: false, info: { ext: info.ext, size: info.size, is_image: true }, content: imageUrl });
+      } else {
+        const content = await api.readFileContent(path);
+        setPreviewFile({ path, name, content, loading: false, info: { ext: info.ext, size: info.size, is_image: false } });
+      }
+    } catch (error) {
+      setPreviewFile({ path, name, loading: false, error: String(error) });
+    }
+  }, []);
 
   const hasRoot = Boolean(data.settings.workspaceRoot);
 
   return (
     <div className={`app-shell theme-${themeMode} accent-${accentColor}`}>
+      {/* 側邊欄 */}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
             <Archive size={20} />
           </div>
-          <span className="brand-name">{registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}</span>
+          <span className="brand-name">
+            {registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}
+          </span>
         </div>
 
         <nav>
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button className={view === item.id ? "nav-item active" : "nav-item"} key={item.id} onClick={() => setView(item.id)}>
-                <Icon size={18} />
-                {item.label}
-              </button>
-            );
-          })}
+          {[
+            { id: "home" as const, label: t.home, icon: Home },
+            { id: "projects" as const, label: t.projects, icon: FolderKanban },
+            { id: "inbox" as const, label: t.inbox, icon: Inbox },
+            { id: "trash" as const, label: t.trash, icon: Trash2 },
+            { id: "search" as const, label: t.search, icon: Search },
+            { id: "settings" as const, label: t.settings, icon: Settings }
+          ].map((item) => (
+            <button
+              className={view === item.id ? "nav-item active" : "nav-item"}
+              key={item.id}
+              onClick={() => setView(item.id)}
+            >
+              <item.icon size={18} />
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         <div className="side-section">
@@ -359,17 +614,15 @@ export function App() {
                 </button>
                 <button
                   className="side-icon-button"
-                  onClick={async () => setData(await window.archiveApi.togglePin(project.id))}
+                  onClick={() => api.togglePin(project.id).then(setData)}
                   title={t.pinned}
-                  aria-label={t.pinned}
                 >
                   <Pin size={14} />
                 </button>
                 <button
                   className="side-icon-button"
-                  onClick={() => openProjectFolder(project)}
+                  onClick={() => api.openFolder(project.path)}
                   title={t.openProjectFolder}
-                  aria-label={t.openProjectFolder}
                 >
                   <FolderOpen size={14} />
                 </button>
@@ -378,8 +631,15 @@ export function App() {
           )}
         </div>
 
-        {/* 工作空間切換（底部） */}
+        {/* 工作空間切換 */}
         <div className="sidebar-footer">
+          <button
+            className="sidebar-theme-btn"
+            onClick={() => setThemeMode(themeMode === "light" ? "dark" : "light")}
+            title={themeMode === "light" ? t.dark : t.light}
+          >
+            {themeMode === "light" ? <Moon size={15} /> : <Sun size={15} />}
+          </button>
           <button className="sidebar-ws-btn" onClick={() => setWsDropdownOpen(!wsDropdownOpen)}>
             <Database size={14} />
             <span>{registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}</span>
@@ -389,21 +649,21 @@ export function App() {
 
         {wsDropdownOpen && registry && (
           <div className="workspace-popover">
-            <div className="popover-header">切換資料庫</div>
+            <div className="popover-header">{t.workspaceSwitch}</div>
             {registry.workspaces.map((ws) => (
               <button
                 className={ws.id === registry.activeWorkspaceId ? "ws-item active" : "ws-item"}
                 key={ws.id}
-                onClick={() => { handleSwitchWorkspace(ws.id); setWsDropdownOpen(false); }}
+                onClick={() => handleSwitchWorkspace(ws.id)}
               >
                 <Archive size={15} />
                 <span>{ws.name}</span>
                 {ws.id === registry.activeWorkspaceId && <span className="ws-check"><Check size={13} /></span>}
               </button>
             ))}
-            <button className="ws-item ws-create" onClick={() => { setWsCreating(true); }}>
+            <button className="ws-item ws-create" onClick={() => setWsCreating(true)}>
               <Plus size={15} />
-              <span>新建資料庫</span>
+              <span>{t.newDatabase}</span>
             </button>
             {wsCreating && (
               <div className="ws-create-input">
@@ -414,11 +674,11 @@ export function App() {
                     if (e.key === "Enter") handleCreateWorkspace();
                     if (e.key === "Escape") { setWsCreating(false); setWsNewName(""); }
                   }}
-                  placeholder="輸入資料庫名稱"
+                  placeholder={t.databaseNamePlaceholder}
                   autoFocus
                 />
                 <button className="primary compact-button" onClick={handleCreateWorkspace} disabled={!wsNewName.trim()}>
-                  確定
+                  {t.confirm}
                 </button>
               </div>
             )}
@@ -426,8 +686,8 @@ export function App() {
         )}
       </aside>
 
+      {/* 主內容區 */}
       <main className="main">
-        {/* 工作目錄未設置提示橫幅 */}
         {!hasRoot && (
           <div className="warning-banner">
             <span>{t.noRootWarning}</span>
@@ -436,68 +696,56 @@ export function App() {
         )}
 
         <header className="topbar">
-          <div className="command-search">
-            <Search size={18} />
-            <input
-              ref={searchInputRef}
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setView("search");
-              }}
-              placeholder={t.searchPlaceholder}
-            />
-          </div>
+          {view === "projects" && activeProject ? (
+            <div className="topbar-breadcrumb">
+              <button className="breadcrumb-btn" onClick={() => setView("home")}>
+                <Home size={14} />
+                {t.home}
+              </button>
+              <ChevronRight size={13} className="breadcrumb-sep" />
+              <span className="breadcrumb-current">{activeProject.name}</span>
+            </div>
+          ) : (
+            <div className="command-search">
+              <Search size={18} />
+              <input
+                ref={searchInputRef}
+                value={query}
+                onChange={(event) => { setQuery(event.target.value); setView("search"); }}
+                placeholder={t.searchPlaceholder}
+              />
+            </div>
+          )}
           <div className="topbar-actions">
-            <select className="toolbar-select" value={language} onChange={(event) => setLanguage(event.target.value as Language)} aria-label={t.language}>
-              <option value="zh">简体中文</option>
-              <option value="en">English</option>
-            </select>
-            <button className="secondary icon-text-button" onClick={() => setThemeMode(themeMode === "light" ? "dark" : "light")}>
-              {themeMode === "light" ? <Sun size={17} /> : <Moon size={17} />}
-              {themeMode === "light" ? t.light : t.dark}
-            </button>
-            <select className="toolbar-select" value={accentColor} onChange={(event) => setAccentColor(event.target.value as AccentColor)} aria-label={t.accent}>
-              <option value="teal">Teal</option>
-              <option value="blue">Blue</option>
-              <option value="violet">Violet</option>
-              <option value="orange">Orange</option>
-            </select>
-            <button className="secondary" onClick={addInboxFiles}>
-              <FileInput size={17} />
-              {t.importFiles}
-            </button>
-            <button
-              className="primary"
-              onClick={() => setNewProjectOpen(true)}
-              disabled={!hasRoot}
-              title={hasRoot ? undefined : t.noRootWarning}
-            >
-              <Plus size={17} />
+            <button className="primary" onClick={() => setNewProjectOpen(true)} disabled={!hasRoot} title={hasRoot ? undefined : t.noRootWarning}>
+              <Plus size={16} />
               {t.newProject}
             </button>
           </div>
         </header>
 
+        {/* 視圖 */}
         {view === "home" && (
           <HomeView
             data={data}
             recentProjects={recentProjects}
             onOpenProject={openProject}
-            onNewProject={() => { if (hasRoot) setNewProjectOpen(true); else setView("settings"); }}
+            onNewProject={() => hasRoot ? setNewProjectOpen(true) : setView("settings")}
             onImport={addInboxFiles}
+            t={t}
           />
         )}
 
         {view === "projects" && activeProject && (
           <ProjectsView
             data={data}
+            setData={setData}
             activeProject={activeProject}
-            onDataChange={setData}
             language={language}
             t={t}
-            categoryCollapsed={categoryCollapsed}
-            onCategoryCollapsedChange={setCategoryCollapsed}
+            copiedFile={copiedFile}
+            onCopyFile={setCopiedFile}
+            onPreviewFile={handlePreviewFile}
           />
         )}
 
@@ -509,6 +757,7 @@ export function App() {
             onImport={addInboxFiles}
             onOrganize={organizeInbox}
             onDataChange={setData}
+            t={t}
           />
         )}
 
@@ -518,6 +767,7 @@ export function App() {
             setQuery={setQuery}
             results={searchResults}
             onOpenProject={openProject}
+            t={t}
           />
         )}
 
@@ -526,27 +776,43 @@ export function App() {
             data={data}
             setData={setData}
             registry={registry}
-            setRegistry={setRegistry}
-            onRename={openRenameDialog}
-            onDelete={openDeleteDialog}
-            onSwitch={(id) => handleSwitchWorkspace(id)}
+            language={language}
+            setLanguage={setLanguage}
+            themeMode={themeMode}
+            setThemeMode={setThemeMode}
+            accentColor={accentColor}
+            setAccentColor={setAccentColor}
+            t={t}
+            onRename={(id, name) => setDialog({ type: "rename-workspace", workspaceId: id, currentName: name })}
+            onDelete={(id, name) => setDialog({ type: "delete-workspace", workspaceId: id, name })}
+            onSwitch={handleSwitchWorkspace}
+            onMigrateRoot={(oldRoot, newRoot, fileCount) => setDialog({ type: "migrate-root", oldRoot, newRoot, fileCount })}
+            categories={data.settings.categories}
+            onEditCategories={() => setCategoryEditOpen(true)}
+          />
+        )}
+
+        {view === "trash" && (
+          <TrashView
+            trashItems={trashItems}
+            t={t}
+            onRestore={handleRestoreProject}
+            onPermanentDelete={handlePermanentDelete}
+            onEmptyTrash={() => setTrashConfirmOpen(true)}
           />
         )}
       </main>
 
+      {/* 彈窗 */}
       {newProjectOpen && (
         <NewProjectDialog
           root={data.settings.workspaceRoot}
           onClose={() => setNewProjectOpen(false)}
-          onCreated={(next) => {
-            setData(next);
-            setNewProjectOpen(false);
-            setView("projects");
-          }}
+          onCreated={(next) => { setData(next); setNewProjectOpen(false); setView("projects"); }}
+          onSubmit={api.createProject}
         />
       )}
 
-      {/* 重命名資料庫彈窗 */}
       {dialog.type === "rename-workspace" && (
         <RenameWorkspaceDialog
           currentName={dialog.currentName}
@@ -555,7 +821,6 @@ export function App() {
         />
       )}
 
-      {/* 刪除資料庫確認彈窗 */}
       {dialog.type === "delete-workspace" && (
         <ConfirmDeleteDialog
           name={dialog.name}
@@ -563,804 +828,48 @@ export function App() {
           onClose={() => setDialog({ type: "none" })}
         />
       )}
-    </div>
-  );
-}
 
-// ── HomeView ──────────────────────────────────────────────
-
-function HomeView({
-  data,
-  recentProjects,
-  onOpenProject,
-  onNewProject,
-  onImport
-}: {
-  data: AppData;
-  recentProjects: Project[];
-  onOpenProject: (project: Project) => void;
-  onNewProject: () => void;
-  onImport: () => void;
-}) {
-  return (
-    <section className="page">
-      <div className="hero-band">
-        <div>
-          <p className="eyebrow">項目入口管理器</p>
-          <h1>不用再一層層點文件夾。</h1>
-          <p>用項目、別名、標籤和最近訪問，把零散資料快速歸位並找回來。</p>
-        </div>
-        <div className="hero-actions">
-          <button className="primary" onClick={onNewProject}>
-            <Plus size={18} />
-            新建項目
-          </button>
-          <button className="secondary" onClick={onImport}>
-            <FileInput size={18} />
-            加入收件箱
-          </button>
-        </div>
-      </div>
-
-      <div className="metric-grid">
-        <Metric label="項目數量" value={String(data.projects.length)} />
-        <Metric label="待整理文件" value={String(data.inbox.length)} />
-        <Metric label="置頂項目" value={String(data.projects.filter((project) => project.pinned).length)} />
-        <Metric label="工作目錄" value={data.settings.workspaceRoot || "未設置"} compact tooltip={data.settings.workspaceRoot} />
-      </div>
-
-      <div className="split">
-        <Panel title="最近項目" icon={<Clock3 size={18} />}>
-          {recentProjects.length === 0 ? (
-            <EmptyState title="還沒有項目" body="先新建一個項目，軟件會自動建立標準分類資料夾。" />
-          ) : (
-            <div className="project-grid">
-              {recentProjects.map((project) => (
-                <ProjectCard key={project.id} project={project} onOpen={() => onOpenProject(project)} />
-              ))}
-            </div>
-          )}
-        </Panel>
-
-        <Panel title="最近操作" icon={<Sparkles size={18} />}>
-          {data.activities.length === 0 ? (
-            <EmptyState title="暫無操作記錄" body="新建項目、導入文件和歸類文件後會顯示在這裡。" />
-          ) : (
-            <div className="activity-list">
-              {data.activities.slice(0, 8).map((activity) => (
-                <div className="activity" key={activity.id}>
-                  <span>{activity.title}</span>
-                  <time>{formatDate(activity.createdAt)}</time>
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-      </div>
-    </section>
-  );
-}
-
-// ── ProjectsView ──────────────────────────────────────────
-
-function ProjectsView({
-  data,
-  activeProject,
-  onDataChange,
-  language,
-  t,
-  categoryCollapsed,
-  onCategoryCollapsedChange
-}: {
-  data: AppData;
-  activeProject: Project;
-  onDataChange: (data: AppData) => void;
-  language: Language;
-  t: (typeof messages)[Language];
-  categoryCollapsed: boolean;
-  onCategoryCollapsedChange: (v: boolean) => void;
-}) {
-  const [selectedCategory, setSelectedCategory] = useState(data.settings.categories[0] || "");
-  const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
-  const [fileFilter, setFileFilter] = useState("");
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-  const [sortMode, setSortMode] = useState<SortMode>("name");
-  const [fileScale, setFileScale] = useState<FileScale>("comfortable");
-  const [newFolderName, setNewFolderName] = useState("");
-
-  // 切換項目時重置狀態
-  useEffect(() => {
-    setSelectedCategory(data.settings.categories[0] || "");
-    setFileFilter("");
-  }, [activeProject.id]);
-
-  useEffect(() => {
-    if (!activeProject || !selectedCategory) {
-      setCategoryFiles([]);
-      return;
-    }
-    window.archiveApi.listCategoryFiles(activeProject.path, selectedCategory).then(setCategoryFiles);
-  }, [activeProject, selectedCategory]);
-
-  async function refreshCategoryFiles() {
-    if (!activeProject || !selectedCategory) return;
-    setCategoryFiles(await window.archiveApi.listCategoryFiles(activeProject.path, selectedCategory));
-  }
-
-  async function addFilesToCategory(filePaths?: string[]) {
-    if (!activeProject || !selectedCategory) return;
-    const files = filePaths || await window.archiveApi.selectFiles();
-    if (files.length === 0) return;
-    const next = await window.archiveApi.addFilesToCategory({
-      projectId: activeProject.id,
-      category: selectedCategory,
-      filePaths: files
-    });
-    onDataChange(next);
-    await refreshCategoryFiles();
-  }
-
-  async function createFolderInCategory() {
-    if (!activeProject || !selectedCategory) return;
-    if (!newFolderName.trim()) return;
-    const nextFiles = await window.archiveApi.createCategoryFolder({
-      projectId: activeProject.id,
-      category: selectedCategory,
-      folderName: newFolderName.trim()
-    });
-    setCategoryFiles(nextFiles);
-    setNewFolderName("");
-  }
-
-  function getDroppedFilePaths(event: React.DragEvent) {
-    return Array.from(event.dataTransfer.files)
-      .map((file) => (file as DragFile).path)
-      .filter((filePath): filePath is string => Boolean(filePath));
-  }
-
-  const sortFiles = (files: CategoryFile[]) =>
-    [...files].sort((a, b) => {
-      if (sortMode === "time") {
-        return new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime();
-      }
-      return a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", { numeric: true, sensitivity: "base" });
-    });
-
-  const matchesFilter = (file: CategoryFile) => file.name.toLowerCase().includes(fileFilter.trim().toLowerCase());
-  const filteredFiles = sortFiles(categoryFiles.filter((file) => matchesFilter(file) || file.children?.some(matchesFilter)));
-  const rootFiles = filteredFiles.filter((file) => !file.isDirectory && matchesFilter(file));
-  const folderSections = filteredFiles
-    .filter((file) => file.isDirectory)
-    .map((folder) => ({ ...folder, children: sortFiles((folder.children || []).filter(matchesFilter)) }));
-
-  // 分類計數：直接讀取 listCategoryFiles，此處用 recentFiles 作參考值並標注 "近似"
-  const categoryCounts = data.settings.categories.reduce<Record<string, number>>((acc, category) => {
-    acc[category] = (activeProject.recentFiles || []).filter((file) => file.category === category).length;
-    return acc;
-  }, {});
-
-  return (
-    <section className="page projects-page">
-      <div className="project-detail">
-        <div className={`workspace-grid ${categoryCollapsed ? "category-collapsed" : ""}`}>
-          <div className={`project-list-panel category-side-panel ${categoryCollapsed ? "collapsed" : ""}`}>
-            <div className="panel-mini-title">
-              {!categoryCollapsed && t.categories}
-              <button
-                className="collapse-btn"
-                onClick={() => onCategoryCollapsedChange(!categoryCollapsed)}
-                title={categoryCollapsed ? "展开分类" : "收起分类"}
-              >
-                {categoryCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-              </button>
-            </div>
-            <div className="category-list">
-              {data.settings.categories.map((category) => (
-                <button
-                  className={category === selectedCategory ? "category-row active" : "category-row"}
-                  key={category}
-                  onClick={() => setSelectedCategory(category)}
-                >
-                  <span>
-                    <FolderKanban size={18} />
-                    {category}
-                  </span>
-                  {categoryCounts[category] > 0 && <small>{categoryCounts[category]}</small>}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <Panel title={selectedCategory || t.name} icon={<FolderOpen size={18} />}>
-            <div className="file-toolbar">
-              <div className="inline-search">
-                <Search size={17} />
-                <input value={fileFilter} onChange={(event) => setFileFilter(event.target.value)} placeholder={t.filterByName} />
-                {fileFilter && (
-                  <button className="icon-button" onClick={() => setFileFilter("")} aria-label="Clear">
-                    <X size={16} />
-                  </button>
-                )}
-              </div>
-              <select className="toolbar-select" value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)}>
-                <option value="name">{t.sortByName}</option>
-                <option value="time">{t.sortByTime}</option>
-              </select>
-              <select className="toolbar-select" value={fileScale} onChange={(event) => setFileScale(event.target.value as FileScale)} aria-label={t.scale}>
-                <option value="compact">S</option>
-                <option value="comfortable">M</option>
-                <option value="large">L</option>
-              </select>
-              <button
-                className="icon-button folder-icon-button"
-                onClick={() => window.archiveApi.openFolder(`${activeProject.path}\\${selectedCategory}`)}
-                title={t.openCategoryFolder}
-                aria-label={t.openCategoryFolder}
-              >
-                <FolderOpen size={17} />
-              </button>
-              <div className="new-folder-control">
-                <input
-                  value={newFolderName}
-                  onChange={(event) => setNewFolderName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") createFolderInCategory();
-                  }}
-                  placeholder={t.folderNamePrompt}
-                />
-              </div>
-              <button className="secondary icon-text-button" onClick={createFolderInCategory} disabled={!newFolderName.trim()}>
-                <FolderPlus size={17} />
-                {t.newFolder}
-              </button>
-              <button className="primary" onClick={() => addFilesToCategory()}>
-                <Plus size={17} />
-                {t.addFiles}
-              </button>
-            </div>
-
-            <div className="file-table-head">
-              <span>{t.name}</span>
-              <span>{t.modifiedAt}</span>
-              <span>{t.size}</span>
-            </div>
-
-            <div
-              className={isDraggingFiles ? "file-drop-zone dragging" : "file-drop-zone"}
-              onDragEnter={(event) => {
-                event.preventDefault();
-                setIsDraggingFiles(true);
-              }}
-              onDragOver={(event) => event.preventDefault()}
-              onDragLeave={(event) => {
-                if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-                setIsDraggingFiles(false);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                setIsDraggingFiles(false);
-                addFilesToCategory(getDroppedFilePaths(event));
-              }}
-            >
-              <div className="drop-hint">{t.dragHint}</div>
-              {filteredFiles.length === 0 ? (
-                <EmptyState
-                  title={categoryFiles.length === 0 ? t.emptyCategory : t.noMatch}
-                  body={categoryFiles.length === 0 ? t.emptyCategoryBody : t.noMatchBody}
-                />
-              ) : (
-                <div className={`file-table file-table-${fileScale}`}>
-                  {rootFiles.length > 0 && (
-                    <FileSection
-                      title={t.rootFiles}
-                      files={rootFiles}
-                      folderLabel={t.folder}
-                    />
-                  )}
-                  {folderSections.map((folder) => (
-                    <FileSection
-                      key={folder.path}
-                      title={folder.name}
-                      files={folder.children || []}
-                      folderLabel={t.folder}
-                      onOpenFolder={() => window.archiveApi.openFolder(folder.path)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </Panel>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ── FileSection ───────────────────────────────────────────
-
-function FileSection({
-  title,
-  files,
-  folderLabel,
-  onOpenFolder
-}: {
-  title: string;
-  files: CategoryFile[];
-  folderLabel: string;
-  onOpenFolder?: () => void;
-}) {
-  return (
-    <section className="file-section">
-      <div className="file-section-title">
-        <span>{title}</span>
-        {onOpenFolder && (
-          <button className="icon-button" onClick={onOpenFolder} title={folderLabel} aria-label={folderLabel}>
-            <FolderOpen size={15} />
-          </button>
-        )}
-      </div>
-      {files.length === 0 ? (
-        <div className="file-section-empty">Empty</div>
-      ) : (
-        files.map((file) => (
-          <button className="file-table-row" key={file.path} onClick={() => window.archiveApi.openFile(file.path)}>
-            <span>{file.name}</span>
-            <small>{formatDate(file.modifiedAt)}</small>
-            <small>{file.isDirectory ? folderLabel : formatSize(file.size)}</small>
-          </button>
-        ))
+      {dialog.type === "migrate-root" && (
+        <MigrateRootDialog
+          oldRoot={dialog.oldRoot}
+          newRoot={dialog.newRoot}
+          fileCount={dialog.fileCount}
+          t={t}
+          onConfirm={(migrate) => handleMigrateRoot(dialog.oldRoot, dialog.newRoot, migrate)}
+          onClose={() => setDialog({ type: "none" })}
+        />
       )}
-    </section>
-  );
-}
 
-// ── InboxView ─────────────────────────────────────────────
-
-function InboxView({
-  data,
-  selected,
-  onSelectedChange,
-  onImport,
-  onOrganize,
-  onDataChange
-}: {
-  data: AppData;
-  selected: string[];
-  onSelectedChange: (ids: string[]) => void;
-  onImport: () => void;
-  onOrganize: (projectId: string, category: string, itemIds?: string[]) => void;
-  onDataChange: (data: AppData) => void;
-}) {
-  const [projectId, setProjectId] = useState(data.projects[0]?.id || "");
-  const [category, setCategory] = useState(data.settings.categories[0] || "");
-
-  useEffect(() => {
-    if (!projectId && data.projects[0]) setProjectId(data.projects[0].id);
-  }, [data.projects, projectId]);
-
-  function toggle(id: string) {
-    onSelectedChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
-  }
-
-  async function handleDeleteSelected() {
-    if (selected.length === 0) return;
-    const next = await window.archiveApi.deleteInboxItems(selected);
-    onDataChange(next);
-    onSelectedChange([]);
-  }
-
-  async function handleDeleteOne(id: string) {
-    const next = await window.archiveApi.deleteInboxItems([id]);
-    onDataChange(next);
-    onSelectedChange(selected.filter((s) => s !== id));
-  }
-
-  async function handleClearAll() {
-    const next = await window.archiveApi.clearInbox();
-    onDataChange(next);
-    onSelectedChange([]);
-  }
-
-  return (
-    <section className="page">
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">臨時入口</p>
-          <h1>收件箱</h1>
-          <p>先把散落文件放進來，再批量歸入項目和分類。</p>
-        </div>
-        <div className="hero-actions">
-          <button className="primary" onClick={onImport}>
-            <FileInput size={17} />
-            導入文件
-          </button>
-          {data.inbox.length > 0 && (
-            <button className="secondary" onClick={handleClearAll}>
-              <Trash2 size={17} />
-              清空全部
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="organize-bar">
-        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-          {data.projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
-        </select>
-        <select value={category} onChange={(event) => setCategory(event.target.value)}>
-          {data.settings.categories.map((item) => <option value={item} key={item}>{item}</option>)}
-        </select>
-        <div className="organize-bar-actions">
-          <button className="primary" disabled={selected.length === 0 || !projectId} onClick={() => onOrganize(projectId, category)}>
-            歸類已選 {selected.length}
-          </button>
-          {selected.length > 0 && (
-            <button className="secondary compact-button" onClick={handleDeleteSelected}>
-              <Trash2 size={15} />
-              刪除已選
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="inbox-table">
-        {data.inbox.length === 0 ? (
-          <EmptyState title="收件箱是空的" body="導入桌面、下載或聊天軟件中的文件後，可以在這裡批量整理。" />
-        ) : (
-          data.inbox.map((item) => {
-            const recommendedProject = data.projects.find((project) => project.id === item.recommendedProjectId);
-            return (
-              <div className="inbox-row" key={item.id}>
-                <input type="checkbox" checked={selected.includes(item.id)} onChange={() => toggle(item.id)} />
-                <div className="inbox-main">
-                  <strong>{item.name}</strong>
-                  <span>{item.sourcePath}</span>
-                </div>
-                <div className="recommend">
-                  <span>{recommendedProject?.name || "未匹配項目"}</span>
-                  <small>{item.recommendedCategory}</small>
-                </div>
-                <button
-                  className="secondary compact-button"
-                  disabled={!recommendedProject}
-                  onClick={() => recommendedProject && onOrganize(recommendedProject.id, item.recommendedCategory, [item.id])}
-                >
-                  套用推薦
-                </button>
-                <button
-                  className="icon-button inbox-delete-btn"
-                  onClick={() => handleDeleteOne(item.id)}
-                  title="從收件箱移除"
-                  aria-label="刪除"
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </section>
-  );
-}
-
-// ── SearchView ────────────────────────────────────────────
-
-function SearchView({
-  query,
-  setQuery,
-  results,
-  onOpenProject
-}: {
-  query: string;
-  setQuery: (query: string) => void;
-  results: {
-    projects: Project[];
-    files: Array<{ name: string; path: string; category: string; projectName: string; size: number }>;
-    inbox: InboxItem[];
-  };
-  onOpenProject: (project: Project) => void;
-}) {
-  return (
-    <section className="page">
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">快速入口</p>
-          <h1>全局搜索</h1>
-          <p>按項目名、簡稱、標籤或文件名搜索，不需要記住資料夾路徑。</p>
-        </div>
-      </div>
-      <div className="large-search">
-        <Search size={22} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：支付、HIS、退款、接口、功能書" autoFocus />
-      </div>
-
-      {!query.trim() ? (
-        <EmptyState title="輸入關鍵詞開始搜索" body="建議給項目設置別名和標籤，搜索會更接近你的記憶方式。" />
-      ) : (
-        <div className="search-sections">
-          <ResultSection title="項目">
-            {results.projects.map((project) => (
-              <button className="result-row" key={project.id} onClick={() => onOpenProject(project)}>
-                <FolderKanban size={18} />
-                <span>{project.name}</span>
-                <small>{project.alias || project.path}</small>
-              </button>
-            ))}
-          </ResultSection>
-          <ResultSection title="最近文件">
-            {results.files.map((file) => (
-              <button className="result-row" key={file.path} onClick={() => window.archiveApi.openFile(file.path)}>
-                <FileInput size={18} />
-                <span>{file.name}</span>
-                <small>{file.projectName} / {file.category}</small>
-              </button>
-            ))}
-          </ResultSection>
-          <ResultSection title="收件箱">
-            {results.inbox.map((item) => (
-              <div className="result-row static" key={item.id}>
-                <Inbox size={18} />
-                <span>{item.name}</span>
-                <small>{item.sourcePath}</small>
-              </div>
-            ))}
-          </ResultSection>
-        </div>
+      {trashConfirmOpen && (
+        <TrashConfirmDialog
+          t={t}
+          onConfirm={handleEmptyTrash}
+          onClose={() => setTrashConfirmOpen(false)}
+        />
       )}
-    </section>
-  );
-}
 
-// ── SettingsView ──────────────────────────────────────────
+      {previewFile && (
+        <PreviewModal
+          file={previewFile}
+          onClose={() => setPreviewFile(null)}
+          onOpenExternal={() => api.openFile(previewFile.path)}
+        />
+      )}
 
-function SettingsView({
-  data,
-  setData,
-  registry,
-  setRegistry,
-  onRename,
-  onDelete,
-  onSwitch
-}: {
-  data: AppData;
-  setData: (data: AppData) => void;
-  registry: WorkspaceRegistry | null;
-  setRegistry: (r: WorkspaceRegistry) => void;
-  onRename: (workspaceId: string, currentName: string) => void;
-  onDelete: (workspaceId: string, name: string) => void;
-  onSwitch: (workspaceId: string) => void;
-}) {
-  async function chooseRoot() {
-    const root = await window.archiveApi.selectRoot();
-    if (root) setData(await window.archiveApi.updateRoot(root));
-  }
-
-  return (
-    <section className="page">
-      <div className="page-header">
-        <div>
-          <p className="eyebrow">本地配置</p>
-          <h1>設置</h1>
-          <p>所有資料都保存在本機，項目文件夾由你指定。</p>
-        </div>
-      </div>
-      <Panel title="工作目錄" icon={<FolderOpen size={18} />}>
-        <div className="setting-row">
-          <div>
-            <strong title={data.settings.workspaceRoot || undefined}>{data.settings.workspaceRoot || "未設置"}</strong>
-            <p>新建項目時，會在這個目錄下生成項目資料夾和標準分類。</p>
-          </div>
-          <button className="secondary" onClick={chooseRoot}>更換目錄</button>
-        </div>
-      </Panel>
-      <Panel title="資料庫管理" icon={<Archive size={18} />}>
-        {registry?.workspaces.map((ws) => (
-          <div className="setting-row" key={ws.id}>
-            <div>
-              <strong>{ws.name}</strong>
-              {ws.id === registry.activeWorkspaceId && <span className="badge">當前</span>}
-            </div>
-            <div className="setting-actions">
-              {ws.id !== registry.activeWorkspaceId && (
-                <button className="secondary compact-button" onClick={() => onSwitch(ws.id)}>
-                  <Check size={14} />
-                  切換
-                </button>
-              )}
-              <button className="secondary compact-button" onClick={() => onRename(ws.id, ws.name)}>
-                <Pencil size={14} />
-                重命名
-              </button>
-              {ws.id !== registry.activeWorkspaceId && (
-                <button className="secondary compact-button" onClick={() => onDelete(ws.id, ws.name)}>
-                  <Trash2 size={14} />
-                  刪除
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-      </Panel>
-      <Panel title="默認分類模板" icon={<Tags size={18} />}>
-        <div className="category-grid">
-          {data.settings.categories.map((category) => <div className="category-tile passive" key={category}>{category}</div>)}
-        </div>
-      </Panel>
-    </section>
-  );
-}
-
-// ── NewProjectDialog ──────────────────────────────────────
-
-function NewProjectDialog({
-  root,
-  onClose,
-  onCreated
-}: {
-  root: string;
-  onClose: () => void;
-  onCreated: (data: AppData) => void;
-}) {
-  const [name, setName] = useState("");
-  const [alias, setAlias] = useState("");
-  const [tags, setTags] = useState("");
-  const [pinned, setPinned] = useState(true);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!name.trim()) return;
-    const next = await window.archiveApi.createProject({
-      name: name.trim(),
-      alias: alias.trim(),
-      tags: tags.split(/[，,\s]+/).map((tag) => tag.trim()).filter(Boolean),
-      pinned,
-      root
-    });
-    onCreated(next);
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <form className="modal" onSubmit={submit}>
-        <h2>新建項目</h2>
-        <label>
-          項目名稱
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：醫院支付系統改造" autoFocus />
-        </label>
-        <label>
-          常用別名
-          <input value={alias} onChange={(event) => setAlias(event.target.value)} placeholder="例如：支付改造、門診支付" />
-        </label>
-        <label>
-          標籤
-          <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="例如：HIS 支付 2026" />
-        </label>
-        <label className="check-line">
-          <input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} />
-          建立後置頂
-        </label>
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
-          <button className="primary" type="submit">建立項目</button>
-        </div>
-      </form>
+      {categoryEditOpen && (
+        <CategoryEditModal
+          categories={data.settings.categories}
+          editing={categoryEditing}
+          newName={categoryNewName}
+          onNewNameChange={setCategoryNewName}
+          onSave={handleSaveCategory}
+          onDelete={handleDeleteCategory}
+          onEdit={openEditCategory}
+          onAdd={openAddCategory}
+          onClose={() => { setCategoryEditOpen(false); setCategoryEditing(null); }}
+        />
+      )}
     </div>
   );
 }
 
-// ── RenameWorkspaceDialog ─────────────────────────────────
-
-function RenameWorkspaceDialog({
-  currentName,
-  onConfirm,
-  onClose
-}: {
-  currentName: string;
-  onConfirm: (name: string) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(currentName);
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    if (!name.trim() || name.trim() === currentName) { onClose(); return; }
-    onConfirm(name.trim());
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <form className="modal" onSubmit={submit}>
-        <h2>重命名資料庫</h2>
-        <label>
-          名稱
-          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-        </label>
-        <div className="modal-actions">
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
-          <button className="primary" type="submit" disabled={!name.trim()}>確定</button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-// ── ConfirmDeleteDialog ───────────────────────────────────
-
-function ConfirmDeleteDialog({
-  name,
-  onConfirm,
-  onClose
-}: {
-  name: string;
-  onConfirm: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h2>刪除資料庫</h2>
-        <p>確定刪除「<strong>{name}</strong>」嗎？此操作無法撤銷，資料庫數據將永久丟失。</p>
-        <div className="modal-actions">
-          <button className="secondary" onClick={onClose}>取消</button>
-          <button className="primary danger" onClick={onConfirm}>確認刪除</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── 小組件 ────────────────────────────────────────────────
-
-function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void }) {
-  return (
-    <button className="project-card" onClick={onOpen}>
-      <div>
-        <strong>{project.name}</strong>
-        <span>{project.alias}</span>
-      </div>
-      <div className="tag-row">
-        {project.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>{tag}</span>)}
-      </div>
-      <small>最近：{formatDate(project.lastOpenedAt || project.updatedAt)}</small>
-    </button>
-  );
-}
-
-function Metric({ label, value, compact = false, tooltip }: { label: string; value: string; compact?: boolean; tooltip?: string }) {
-  return (
-    <div className={compact ? "metric compact" : "metric"}>
-      <span>{label}</span>
-      <strong title={tooltip}>{value}</strong>
-    </div>
-  );
-}
-
-function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="panel">
-      <div className="panel-title">
-        {icon}
-        <h2>{title}</h2>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function ResultSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <Panel title={title} icon={<Search size={18} />}>
-      <div className="result-list">{children || <p className="muted">沒有匹配結果。</p>}</div>
-    </Panel>
-  );
-}
-
-function EmptyState({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="empty">
-      <strong>{title}</strong>
-      <p>{body}</p>
-    </div>
-  );
-}
