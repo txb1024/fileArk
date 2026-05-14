@@ -136,6 +136,8 @@ pub struct PreviewInfo {
     pub size: u64,
     pub is_text: bool,
     pub is_image: bool,
+    #[serde(rename = "previewType")]
+    pub preview_type: String,
 }
 
 // ── 输入 DTO ────────────────────────────────────────────────

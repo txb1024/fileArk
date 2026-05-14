@@ -523,7 +523,46 @@ fn get_preview_info(file_path: String) -> Result<PreviewInfo, String> {
     let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).unwrap_or_default();
     let is_text = utils::TEXT_EXTENSIONS.contains(&ext.as_str());
     let is_image = utils::IMAGE_EXTENSIONS.contains(&ext.as_str());
-    Ok(PreviewInfo { name, ext, size: metadata.len(), is_text, is_image })
+
+    let preview_type = if utils::PDF_EXTENSIONS.contains(&ext.as_str()) {
+        "pdf".to_string()
+    } else if utils::EXCEL_EXTENSIONS.contains(&ext.as_str()) {
+        "excel".to_string()
+    } else if utils::WORD_EXTENSIONS.contains(&ext.as_str()) {
+        "word".to_string()
+    } else if utils::VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+        "video".to_string()
+    } else if utils::AUDIO_EXTENSIONS.contains(&ext.as_str()) {
+        "audio".to_string()
+    } else if utils::MARKDOWN_EXTENSIONS.contains(&ext.as_str()) {
+        "markdown".to_string()
+    } else if is_image {
+        "image".to_string()
+    } else if is_text {
+        "text".to_string()
+    } else if utils::UNSUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
+        "unsupported".to_string()
+    } else {
+        // 未知扩展名，尝试当作文本预览
+        "text".to_string()
+    };
+
+    Ok(PreviewInfo { name, ext, size: metadata.len(), is_text, is_image, preview_type })
+}
+
+#[tauri::command]
+fn read_file_binary(file_path: String) -> Result<String, String> {
+    let path = Path::new(&file_path);
+    if !path.exists() {
+        return Err("文件不存在".to_string());
+    }
+    let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.len() > 50 * 1024 * 1024 {
+        return Err("文件过大，无法预览（限制 50MB）".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -976,6 +1015,7 @@ fn main() {
             copy_file_to,
             move_file_to,
             read_file_content,
+            read_file_binary,
             get_preview_info,
             add_inbox_files,
             organize_inbox,

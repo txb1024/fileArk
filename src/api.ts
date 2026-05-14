@@ -22,6 +22,7 @@ export interface PreviewInfo {
   size: number;
   is_text: boolean;
   is_image: boolean;
+  previewType: string;
 }
 
 export const api: ArchiveApi = {
@@ -66,6 +67,7 @@ export const api: ArchiveApi = {
   sendNotification: (title, body) => invoke<void>("send_notification", { title, body }),
   // 文件预览
   readFileContent: (filePath: string) => invoke<string>("read_file_content", { filePath }),
+  readFileBinary: (filePath: string) => invoke<string>("read_file_binary", { filePath }),
   getPreviewInfo: (filePath: string) => invoke<PreviewInfo>("get_preview_info", { filePath }),
   // 文件操作
   deleteFile: (filePath: string) => invoke<void>("delete_file", { filePath }),

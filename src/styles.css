@@ -1698,9 +1698,40 @@ input {
 .modal {
   width: min(520px, calc(100vw - 40px));
   background: var(--surface);
-  border-radius: 8px;
-  padding: 22px;
+  border-radius: 10px;
+  padding: 0;
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-header h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+
+.modal-body {
+  padding: 20px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal label {
@@ -2032,8 +2063,8 @@ input {
 .preview-modal {
   width: 90vw;
   max-width: 1200px;
-  height: 80vh;
-  max-height: 800px;
+  height: 85vh;
+  max-height: 900px;
   background: var(--surface);
   border-radius: 12px;
   border: 1px solid var(--border);
@@ -2043,42 +2074,13 @@ input {
   overflow: hidden;
 }
 
-.preview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.preview-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 500;
-}
-
-.preview-title .file-icon {
-  color: var(--accent);
-}
-
-.preview-info {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: normal;
-}
-
-.preview-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .preview-content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .preview-loading,
@@ -2101,12 +2103,15 @@ input {
   opacity: 0.8;
 }
 
+/* ── Image Preview (with zoom) ────────── */
 .preview-image-container {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
   padding: 20px;
+  overflow: auto;
 }
 
 .preview-image {
@@ -2114,8 +2119,247 @@ input {
   max-height: 100%;
   object-fit: contain;
   border-radius: 4px;
+  transition: transform 0.15s ease;
 }
 
+.image-zoom-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.zoom-label {
+  font-size: 12px;
+  min-width: 40px;
+  text-align: center;
+  color: var(--text);
+}
+
+/* ── PDF Preview ──────────────────────── */
+.preview-pdf-container {
+  height: 100%;
+  width: 100%;
+}
+
+.preview-pdf-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* ── Excel Preview ────────────────────── */
+.preview-excel-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.excel-sheet-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+}
+
+.excel-sheet-tab {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.excel-sheet-tab.active {
+  background: var(--bg);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.excel-table-wrapper {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+
+.excel-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 13px;
+}
+
+.excel-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.excel-header-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.excel-header-cell {
+  background: var(--surface);
+  font-weight: 600;
+  color: var(--text);
+  position: sticky;
+  top: 0;
+}
+
+.excel-table tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg) 95%, var(--accent));
+}
+
+.excel-info {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+}
+
+/* ── Word Preview ──────────────────────── */
+.preview-word-container {
+  height: 100%;
+  overflow: auto;
+  padding: 32px 24px;
+  background: #3a3f45;
+  display: flex;
+  justify-content: center;
+}
+
+/* 多页面时的堆叠效果 */
+.word-page {
+  background: #fafafa;
+  color: #1a1a1a;
+  padding: 60px 72px;
+  min-height: 720px;
+  max-width: 816px;
+  width: 100%;
+  box-shadow:
+    0 1px 1px rgba(0,0,0,0.15),
+    0 2px 2px rgba(0,0,0,0.15),
+    0 4px 4px rgba(0,0,0,0.15),
+    0 8px 8px rgba(0,0,0,0.15),
+    0 16px 16px rgba(0,0,0,0.12),
+    0 32px 32px rgba(0,0,0,0.08);
+  border-radius: 3px;
+  font-family: 'Georgia', 'Times New Roman', 'Songti SC', 'SimSun', serif;
+  font-size: 15px;
+  line-height: 1.75;
+  position: relative;
+}
+
+/* 页面边缘微光效果 */
+.word-page::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 3px;
+  pointer-events: none;
+  box-shadow: inset 0 0 60px rgba(0,0,0,0.02);
+}
+
+.word-page h1 { font-size: 26px; margin: 0 0 18px; font-weight: 700; color: #111; }
+.word-page h2 { font-size: 21px; margin: 24px 0 14px; font-weight: 600; color: #1a1a1a; }
+.word-page h3 { font-size: 18px; margin: 20px 0 12px; font-weight: 600; color: #222; }
+.word-page p { margin: 0 0 14px; }
+.word-page table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+.word-page td, .word-page th { border: 1px solid #d0d0d0; padding: 10px 12px; }
+.word-page th { background: #f0f0f0; font-weight: 600; }
+.word-page img { max-width: 100%; border-radius: 2px; }
+.word-page ul, .word-page ol { margin: 0 0 14px; padding-left: 28px; }
+.word-page li { margin: 4px 0; }
+.word-page blockquote { border-left: 3px solid #c0c0c0; margin: 14px 0; padding: 4px 18px; color: #555; font-style: italic; }
+.word-page a { color: #2563eb; text-decoration: underline; }
+.word-page strong { font-weight: 700; color: #111; }
+.word-page em { font-style: italic; }
+.word-page code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: 'Fira Code', Consolas, monospace; font-size: 13px; }
+.word-page pre { background: #f5f5f5; padding: 14px 16px; border-radius: 6px; overflow-x: auto; margin: 14px 0; }
+.word-page pre code { background: none; padding: 0; }
+
+/* ── Video Preview ─────────────────────── */
+.preview-video-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: #000;
+}
+
+.preview-video {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* ── Audio Preview ─────────────────────── */
+.preview-audio-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 24px;
+}
+
+.audio-icon {
+  font-size: 64px;
+  opacity: 0.6;
+}
+
+.preview-audio {
+  width: 400px;
+  max-width: 90%;
+}
+
+/* ── Markdown Preview ─────────────────── */
+.preview-markdown-container {
+  padding: 24px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.preview-markdown-container h1 { font-size: 24px; font-weight: 700; margin: 0 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.preview-markdown-container h2 { font-size: 20px; font-weight: 600; margin: 24px 0 12px; }
+.preview-markdown-container h3 { font-size: 17px; font-weight: 600; margin: 20px 0 10px; }
+.preview-markdown-container p { margin: 0 0 12px; }
+.preview-markdown-container ul, .preview-markdown-container ol { margin: 0 0 12px; padding-left: 24px; }
+.preview-markdown-container blockquote { border-left: 3px solid var(--accent); margin: 12px 0; padding: 4px 16px; color: var(--muted); }
+.preview-markdown-container code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 13px; }
+.preview-markdown-container pre { background: var(--surface); padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.preview-markdown-container pre code { background: none; padding: 0; }
+.preview-markdown-container table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.preview-markdown-container th, .preview-markdown-container td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+.preview-markdown-container th { background: var(--surface); font-weight: 600; }
+.preview-markdown-container a { color: var(--accent); }
+.preview-markdown-container img { max-width: 100%; border-radius: 4px; }
+.preview-markdown-container hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+/* ── Code Preview (highlight.js) ──────── */
 .preview-text {
   margin: 0;
   padding: 20px;
@@ -2129,6 +2373,34 @@ input {
 
 .preview-text code {
   font-family: inherit;
+}
+
+.code-highlight {
+  white-space: pre;
+  overflow-x: auto;
+  word-break: normal;
+}
+
+/* ── Unsupported Preview ──────────────── */
+.preview-unsupported {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.preview-unsupported p {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  margin: 0;
+}
+
+.preview-unsupported small {
+  font-size: 13px;
 }
 
 /* ── Preview Button ─────────────────────── */

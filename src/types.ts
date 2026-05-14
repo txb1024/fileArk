@@ -276,12 +276,14 @@ export type ArchiveApi = {
   emptyTrash: () => Promise<void>;
   sendNotification: (title: string, body: string) => Promise<void>;
   readFileContent: (filePath: string) => Promise<string>;
+  readFileBinary: (filePath: string) => Promise<string>;
   getPreviewInfo: (filePath: string) => Promise<{
     name: string;
     ext: string;
     size: number;
     is_text: boolean;
     is_image: boolean;
+    previewType: string;
   }>;
   deleteFile: (filePath: string) => Promise<void>;
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;

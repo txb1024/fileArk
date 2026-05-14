@@ -356,7 +356,7 @@ export function App() {
     content?: string;
     loading: boolean;
     error?: string;
-    info?: { ext: string; size: number; is_image: boolean };
+    info?: { ext: string; size: number; is_image: boolean; previewType: string };
   } | null>(null);
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
   const [wsCreating, setWsCreating] = useState(false);
@@ -554,13 +554,33 @@ export function App() {
     setPreviewFile({ path, name, loading: true });
     try {
       const info = await api.getPreviewInfo(path);
-      if (info.is_image) {
-        const imageUrl = `file:///${path.replace(/\\/g, "/")}`;
-        setPreviewFile({ path, name, loading: false, info: { ext: info.ext, size: info.size, is_image: true }, content: imageUrl });
-      } else {
-        const content = await api.readFileContent(path);
-        setPreviewFile({ path, name, content, loading: false, info: { ext: info.ext, size: info.size, is_image: false } });
+      const previewType = info.previewType;
+      const baseInfo = { ext: info.ext, size: info.size, is_image: info.is_image, previewType };
+
+      // 这些类型不需要读内容，由 PreviewModal 通过 asset 协议直接渲染
+      if (["pdf", "video", "audio"].includes(previewType)) {
+        setPreviewFile({ path, name, loading: false, info: baseInfo });
+        return;
       }
+      // 图片通过 asset 协议 URL
+      if (previewType === "image") {
+        setPreviewFile({ path, name, loading: false, info: { ...baseInfo, is_image: true }, content: path });
+        return;
+      }
+      // Excel / Word 需要读取二进制
+      if (previewType === "excel" || previewType === "word") {
+        const binaryBase64 = await api.readFileBinary(path);
+        setPreviewFile({ path, name, loading: false, info: baseInfo, content: binaryBase64 });
+        return;
+      }
+      // Markdown / 文本 / 代码 读取文本内容
+      if (previewType === "markdown" || previewType === "text") {
+        const content = await api.readFileContent(path);
+        setPreviewFile({ path, name, content, loading: false, info: baseInfo });
+        return;
+      }
+      // 不可预览类型
+      setPreviewFile({ path, name, loading: false, info: baseInfo });
     } catch (error) {
       setPreviewFile({ path, name, loading: false, error: String(error) });
     }

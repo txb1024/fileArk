@@ -56,9 +56,9 @@ pub fn safe_folder_name(value: &str) -> String {
     collapsed.trim().to_string()
 }
 
-/// 文本文件扩展名
+/// 文本文件扩展名（不含 md/markdown，已归入 MARKDOWN_EXTENSIONS）
 pub const TEXT_EXTENSIONS: &[&str] = &[
-    "txt", "md", "markdown", "json", "jsonc", "js", "ts", "jsx", "tsx",
+    "txt", "json", "jsonc", "js", "ts", "jsx", "tsx",
     "html", "css", "scss", "less", "xml", "yaml", "yml", "toml",
     "ini", "conf", "config", "properties", "env", "gitignore",
     "log", "sql", "sh", "bat", "ps1", "py", "rb", "java", "c", "cpp",
@@ -70,6 +70,33 @@ pub const TEXT_EXTENSIONS: &[&str] = &[
 /// 图片文件扩展名
 pub const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp",
+];
+
+/// PDF 文件扩展名
+pub const PDF_EXTENSIONS: &[&str] = &["pdf"];
+
+/// Excel 文件扩展名
+pub const EXCEL_EXTENSIONS: &[&str] = &["xlsx", "xls", "csv"];
+
+/// Word 文件扩展名（仅 docx，doc 为老二进制格式不支持）
+pub const WORD_EXTENSIONS: &[&str] = &["docx"];
+
+/// 视频文件扩展名
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mkv", "avi", "mov"];
+
+/// 音频文件扩展名
+pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "aac", "m4a"];
+
+/// Markdown 文件扩展名
+pub const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown"];
+
+/// 不可预览的文件扩展名
+pub const UNSUPPORTED_EXTENSIONS: &[&str] = &[
+    "exe", "msi", "dll", "sys",    // 可执行文件
+    "zip", "rar", "7z", "tar", "gz", "bz2", "xz",  // 压缩包
+    "dmg", "iso", "img",           // 镜像
+    "bin", "dat", "db", "sqlite",  // 二进制/数据
+    "doc",                         // 老 Word 二进制格式（mammoth 不支持）
 ];
 
 /// 递归复制目录
