@@ -538,6 +538,10 @@ fn get_preview_info(file_path: String) -> Result<PreviewInfo, String> {
         "excel".to_string()
     } else if utils::WORD_EXTENSIONS.contains(&ext.as_str()) {
         "word".to_string()
+    } else if utils::PPTX_EXTENSIONS.contains(&ext.as_str()) {
+        "pptx".to_string()
+    } else if utils::HTML_EXTENSIONS.contains(&ext.as_str()) {
+        "html".to_string()
     } else if utils::VIDEO_EXTENSIONS.contains(&ext.as_str()) {
         "video".to_string()
     } else if utils::AUDIO_EXTENSIONS.contains(&ext.as_str()) {
@@ -551,8 +555,7 @@ fn get_preview_info(file_path: String) -> Result<PreviewInfo, String> {
     } else if utils::UNSUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
         "unsupported".to_string()
     } else {
-        // 未知扩展名，尝试当作文本预览
-        "text".to_string()
+        "unsupported".to_string()
     };
 
     Ok(PreviewInfo { name, ext, size: metadata.len(), is_text, is_image, preview_type })

@@ -1,7 +1,14 @@
 import { Check, Moon, Pencil, Sun, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { api } from "../api";
-import type { AppData, AccentColor, Language, ThemeMode, WorkspaceRegistry, Messages } from "../types";
+import type {
+  AppData,
+  AccentColor,
+  Language,
+  ThemeMode,
+  WorkspaceRegistry,
+  Messages,
+} from "../types";
 
 interface SettingsViewProps {
   data: AppData;
@@ -38,12 +45,15 @@ export function SettingsView({
   onSwitch,
   onMigrateRoot,
   categories,
-  onEditCategories
+  onEditCategories,
 }: SettingsViewProps) {
   const [autostartEnabled, setAutostartEnabled] = useState(false);
 
   useEffect(() => {
-    api.getAutostartEnabled().then(setAutostartEnabled).catch(() => setAutostartEnabled(false));
+    api
+      .getAutostartEnabled()
+      .then(setAutostartEnabled)
+      .catch(() => setAutostartEnabled(false));
   }, []);
 
   async function handleAutostartToggle(enabled: boolean) {
@@ -110,17 +120,26 @@ export function SettingsView({
           <div>
             <strong>{t.accentLabel}</strong>
           </div>
-          <select
-            className="toolbar-select"
-            value={accentColor}
-            onChange={(event) => setAccentColor(event.target.value as AccentColor)}
-            style={{ minWidth: 100 }}
-          >
-            <option value="teal">Teal</option>
-            <option value="blue">Blue</option>
-            <option value="violet">Violet</option>
-            <option value="orange">Orange</option>
-          </select>
+          <div className="accent-swatches">
+            {(
+              [
+                ["teal", "#2ec4b6"],
+                ["blue", "#3b82f6"],
+                ["violet", "#8b5cf6"],
+                ["orange", "#f59e0b"],
+              ] as const
+            ).map(([name, color]) => (
+              <button
+                key={name}
+                className={`accent-swatch ${accentColor === name ? "active" : ""}`}
+                style={{ backgroundColor: color }}
+                onClick={() => setAccentColor(name)}
+                title={name}
+              >
+                {accentColor === name && <Check size={14} color="#fff" strokeWidth={3} />}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -149,7 +168,11 @@ export function SettingsView({
             <p>{t.autostartDesc}</p>
           </div>
           <label className="toggle-switch">
-            <input type="checkbox" checked={autostartEnabled} onChange={(e) => handleAutostartToggle(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={autostartEnabled}
+              onChange={(e) => handleAutostartToggle(e.target.checked)}
+            />
             <span className="toggle-slider"></span>
           </label>
         </div>
@@ -186,7 +209,7 @@ export function SettingsView({
               justifyContent: "space-between",
               alignItems: "center",
               width: "100%",
-              marginBottom: 12
+              marginBottom: 12,
             }}
           >
             <strong>{t.categoryManagement}</strong>
@@ -214,7 +237,9 @@ export function SettingsView({
           <div className="setting-row" key={ws.id}>
             <div>
               <strong>{ws.name}</strong>
-              {ws.id === registry.activeWorkspaceId && <span className="badge">{t.currentDatabase}</span>}
+              {ws.id === registry.activeWorkspaceId && (
+                <span className="badge">{t.currentDatabase}</span>
+              )}
             </div>
             <div className="setting-actions">
               {ws.id !== registry.activeWorkspaceId && (
@@ -228,7 +253,10 @@ export function SettingsView({
                 {t.renameDatabase}
               </button>
               {ws.id !== registry.activeWorkspaceId && (
-                <button className="secondary compact-button danger-hover" onClick={() => onDelete(ws.id, ws.name)}>
+                <button
+                  className="secondary compact-button danger-hover"
+                  onClick={() => onDelete(ws.id, ws.name)}
+                >
                   <Trash2 size={14} />
                   {t.deleteDatabase}
                 </button>

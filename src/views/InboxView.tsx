@@ -14,12 +14,43 @@ interface InboxViewProps {
   t: Messages;
 }
 
-export function InboxView({ data, selected, onSelectedChange, onImport, onOrganize, onDataChange, t }: InboxViewProps) {
+export function InboxView({
+  data,
+  selected,
+  onSelectedChange,
+  onImport,
+  onOrganize,
+  onDataChange,
+  t,
+}: InboxViewProps) {
   const [projectId, setProjectId] = useState(data.projects[0]?.id || "");
   const [category, setCategory] = useState(data.settings.categories[0] || "");
+  const [bulkApplying, setBulkApplying] = useState(false);
+
+  async function handleApplyAllSuggestions() {
+    setBulkApplying(true);
+    // 按推荐分组：{ "projectId::category": itemIds[] }
+    const groups: Record<string, string[]> = {};
+    for (const item of data.inbox) {
+      if (item.recommendedProjectId) {
+        const key = `${item.recommendedProjectId}::${item.recommendedCategory}`;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(item.id);
+      }
+    }
+    for (const [key, itemIds] of Object.entries(groups)) {
+      const [projectId, category] = key.split("::");
+      const result = await api.organizeInbox({ itemIds, projectId, category });
+      onDataChange(result);
+    }
+    onSelectedChange([]);
+    setBulkApplying(false);
+  }
 
   function toggle(id: string) {
-    onSelectedChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+    onSelectedChange(
+      selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]
+    );
   }
 
   async function handleDeleteSelected() {
@@ -84,7 +115,15 @@ export function InboxView({ data, selected, onSelectedChange, onImport, onOrgani
             disabled={selected.length === 0 || !projectId}
             onClick={() => onOrganize(projectId, category)}
           >
-            {t.organizeSelected} {selected.length}
+            {t.organizeSelected} {selected.length > 0 && selected.length}
+          </button>
+          <button
+            className="secondary compact-button"
+            disabled={bulkApplying}
+            onClick={handleApplyAllSuggestions}
+            title="按推荐项目与分类一键归类所有文件"
+          >
+            {t.applyRecommend} 全部
           </button>
           {selected.length > 0 && (
             <button className="secondary compact-button" onClick={handleDeleteSelected}>
@@ -100,10 +139,16 @@ export function InboxView({ data, selected, onSelectedChange, onImport, onOrgani
           <EmptyState title={t.inboxEmptyTitle} body={t.inboxEmptyBody} />
         ) : (
           data.inbox.map((item) => {
-            const recommendedProject = data.projects.find((project) => project.id === item.recommendedProjectId);
+            const recommendedProject = data.projects.find(
+              (project) => project.id === item.recommendedProjectId
+            );
             return (
               <div className="inbox-row" key={item.id}>
-                <input type="checkbox" checked={selected.includes(item.id)} onChange={() => toggle(item.id)} />
+                <input
+                  type="checkbox"
+                  checked={selected.includes(item.id)}
+                  onChange={() => toggle(item.id)}
+                />
                 <div className="inbox-main">
                   <strong>{item.name}</strong>
                   <span>{item.sourcePath}</span>
@@ -115,7 +160,10 @@ export function InboxView({ data, selected, onSelectedChange, onImport, onOrgani
                 <button
                   className="secondary compact-button"
                   disabled={!recommendedProject}
-                  onClick={() => recommendedProject && onOrganize(recommendedProject.id, item.recommendedCategory, [item.id])}
+                  onClick={() =>
+                    recommendedProject &&
+                    onOrganize(recommendedProject.id, item.recommendedCategory, [item.id])
+                  }
                 >
                   {t.applyRecommend}
                 </button>

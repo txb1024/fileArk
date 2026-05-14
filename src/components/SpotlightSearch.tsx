@@ -18,6 +18,7 @@ interface SpotlightSearchProps {
   onClose: () => void;
   data: AppData;
   onOpenProject: (project: Project) => void;
+  onSelectInbox?: (itemId: string) => void;
 }
 
 // 高亮匹配文本
@@ -63,7 +64,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: SpotlightSearchProps) {
+export function SpotlightSearch({
+  isOpen,
+  onClose,
+  data,
+  onOpenProject,
+  onSelectInbox,
+}: SpotlightSearchProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [fileResults, setFileResults] = useState<SearchResult[]>([]);
@@ -177,7 +184,10 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (results.length === 0) {
-        if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
         return;
       }
       switch (e.key) {
@@ -214,15 +224,21 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
       }
     } else if (result.type === "file") {
       if (result.isDirectory) {
-        // 目录：打开父级分类文件夹
-        const parent = result.path.substring(0, result.path.lastIndexOf("\\") !== -1 ? result.path.lastIndexOf("\\") : result.path.lastIndexOf("/"));
+        const parent = result.path.substring(
+          0,
+          result.path.lastIndexOf("\\") !== -1
+            ? result.path.lastIndexOf("\\")
+            : result.path.lastIndexOf("/")
+        );
         api.openFolder(parent);
       } else {
         api.openFile(result.path);
       }
       onClose();
+    } else if (result.type === "inbox") {
+      onSelectInbox?.(result.id);
+      onClose();
     }
-    // inbox 类型暂不处理
   };
 
   if (!isOpen) return null;

@@ -1,5 +1,6 @@
-import { FolderPlus, FolderOpen, Trash2 } from "lucide-react";
-import { EmptyState, Panel } from "../components";
+import { FolderPlus, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { EmptyState } from "../components";
 import type { TrashItem, Messages } from "../types";
 
 interface TrashViewProps {
@@ -10,7 +11,15 @@ interface TrashViewProps {
   onEmptyTrash: () => void;
 }
 
-export function TrashView({ trashItems, t, onRestore, onPermanentDelete, onEmptyTrash }: TrashViewProps) {
+export function TrashView({
+  trashItems,
+  t,
+  onRestore,
+  onPermanentDelete,
+  onEmptyTrash,
+}: TrashViewProps) {
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
   return (
     <section className="page">
       <div className="page-header">
@@ -48,10 +57,26 @@ export function TrashView({ trashItems, t, onRestore, onPermanentDelete, onEmpty
                   <FolderPlus size={16} />
                   {t.restoreProject}
                 </button>
-                <button className="danger compact-button" onClick={() => onPermanentDelete(item.id)}>
-                  <Trash2 size={16} />
-                  {t.permanentlyDelete}
-                </button>
+                {confirmingId === item.id ? (
+                  <button
+                    className="danger compact-button"
+                    onClick={() => {
+                      onPermanentDelete(item.id);
+                      setConfirmingId(null);
+                    }}
+                  >
+                    <Trash2 size={16} />
+                    确认删除？
+                  </button>
+                ) : (
+                  <button
+                    className="secondary compact-button danger-hover"
+                    onClick={() => setConfirmingId(item.id)}
+                  >
+                    <Trash2 size={16} />
+                    {t.permanentlyDelete}
+                  </button>
+                )}
               </div>
             </div>
           ))}

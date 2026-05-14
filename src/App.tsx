@@ -12,6 +12,7 @@ import {
   FolderPlus,
   Home,
   Inbox,
+  Menu,
   Moon,
   Pencil,
   Pin,
@@ -26,7 +27,7 @@ import {
   Download,
   Copy,
   LayoutList,
-  LayoutGrid
+  LayoutGrid,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -43,7 +44,7 @@ import {
   TrashConfirmDialog,
   CategoryEditModal,
   PreviewModal,
-  ConfirmDangerDialog
+  ConfirmDangerDialog,
 } from "./dialogs";
 import { storage } from "./utils";
 
@@ -192,7 +193,7 @@ const messages = {
     currentDatabase: "当前",
     switchDatabase: "切换",
     renameDatabase: "重命名",
-    deleteDatabase: "删除"
+    deleteDatabase: "删除",
   },
   en: {
     appName: "Project Archive",
@@ -241,7 +242,8 @@ const messages = {
     light: "Light",
     dark: "Dark",
     scale: "Scale",
-    noRootWarning: "Workspace root is not set. Please configure it in Settings before creating projects.",
+    noRootWarning:
+      "Workspace root is not set. Please configure it in Settings before creating projects.",
     goToSettings: "Go to Settings",
     migrateTitle: "Migrate Workspace",
     migrateBody: "There are {count} files/folders in the old directory. Migrate to new directory?",
@@ -266,7 +268,8 @@ const messages = {
     // HomeView
     heroEyebrow: "Project Entry Manager",
     heroTitle: "No more clicking through folders.",
-    heroBody: "Use projects, aliases, tags, and recent access to quickly organize and find your files.",
+    heroBody:
+      "Use projects, aliases, tags, and recent access to quickly organize and find your files.",
     metricProjectCount: "Projects",
     metricInboxCount: "Inbox items",
     metricPinnedCount: "Pinned",
@@ -289,12 +292,14 @@ const messages = {
     applyRecommend: "Apply suggestion",
     noMatchProject: "No matching project",
     inboxEmptyTitle: "Inbox is empty",
-    inboxEmptyBody: "Import files from your desktop, downloads, or chat apps to organize them here.",
+    inboxEmptyBody:
+      "Import files from your desktop, downloads, or chat apps to organize them here.",
     removeFromInbox: "Remove from inbox",
     // SearchView
     searchEyebrow: "Quick Access",
     searchTitle: "Global Search",
-    searchBody: "Search by project name, alias, tag, or file name — no need to remember folder paths.",
+    searchBody:
+      "Search by project name, alias, tag, or file name — no need to remember folder paths.",
     searchPlaceholderLarge: "e.g. payment, API, refund, interface, spec",
     searchStartTitle: "Type a keyword to start searching",
     searchStartBody: "Setting aliases and tags on projects helps search match your memory better.",
@@ -319,8 +324,8 @@ const messages = {
     currentDatabase: "Current",
     switchDatabase: "Switch",
     renameDatabase: "Rename",
-    deleteDatabase: "Delete"
-  }
+    deleteDatabase: "Delete",
+  },
 } as const;
 
 type Messages = typeof messages.zh;
@@ -331,8 +336,8 @@ const emptyData: AppData = {
   activities: [],
   settings: {
     workspaceRoot: "",
-    categories: []
-  }
+    categories: [],
+  },
 };
 
 // ── 主應用組件 ─────────────────────────────────────────────
@@ -343,9 +348,15 @@ export function App() {
   const [registry, setRegistry] = useState<WorkspaceRegistry | null>(null);
   const [view, setView] = useState<View>("home");
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [language, setLanguage] = useState<Language>(() => storage.get("archive.language", "zh" as Language));
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => storage.get("archive.theme", "light" as ThemeMode));
-  const [accentColor, setAccentColor] = useState<AccentColor>(() => storage.get("archive.accent", "teal" as AccentColor));
+  const [language, setLanguage] = useState<Language>(() =>
+    storage.get("archive.language", "zh" as Language)
+  );
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
+    storage.get("archive.theme", "light" as ThemeMode)
+  );
+  const [accentColor, setAccentColor] = useState<AccentColor>(() =>
+    storage.get("archive.accent", "teal" as AccentColor)
+  );
   const [dialog, setDialog] = useState<DialogState>({ type: "none" });
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
@@ -365,9 +376,12 @@ export function App() {
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
-  const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(null);
+  const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(
+    null
+  );
   const [categoryNewName, setCategoryNewName] = useState("");
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [fileChangeEpoch, setFileChangeEpoch] = useState(0);
 
@@ -391,7 +405,10 @@ export function App() {
       await api.startWatching(root);
       unlisten = await listen<string[]>("fs-changed", () => {
         setFileChangeEpoch((e) => e + 1);
-        api.getData().then(setData).catch(() => {});
+        api
+          .getData()
+          .then(setData)
+          .catch(() => {});
       });
     })().catch(() => {});
 
@@ -414,13 +431,20 @@ export function App() {
   const sidebarProjects = useMemo(() => {
     return [...data.projects].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      return a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", { numeric: true, sensitivity: "base" });
+      return a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", {
+        numeric: true,
+        sensitivity: "base",
+      });
     });
   }, [data.projects, language]);
 
   const recentProjects = useMemo(() => {
     return [...data.projects]
-      .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt).getTime())
+      .sort(
+        (a, b) =>
+          new Date(b.lastOpenedAt || b.updatedAt).getTime() -
+          new Date(a.lastOpenedAt || a.updatedAt).getTime()
+      )
       .slice(0, 6);
   }, [data.projects]);
 
@@ -454,11 +478,14 @@ export function App() {
     }
   }, []);
 
-  const organizeInbox = useCallback(async (projectId: string, category: string, itemIds = selectedInbox) => {
-    if (!projectId || itemIds.length === 0) return;
-    setData(await api.organizeInbox({ itemIds, projectId, category }));
-    setSelectedInbox([]);
-  }, [selectedInbox]);
+  const organizeInbox = useCallback(
+    async (projectId: string, category: string, itemIds = selectedInbox) => {
+      if (!projectId || itemIds.length === 0) return;
+      setData(await api.organizeInbox({ itemIds, projectId, category }));
+      setSelectedInbox([]);
+    },
+    [selectedInbox]
+  );
 
   const handleSwitchWorkspace = useCallback(async (workspaceId: string) => {
     setData(await api.switchWorkspace(workspaceId));
@@ -466,6 +493,7 @@ export function App() {
     setView("home");
     setActiveProjectId(null);
     setWsDropdownOpen(false);
+    setSidebarOpen(false);
   }, []);
 
   const handleCreateWorkspace = useCallback(async () => {
@@ -493,10 +521,13 @@ export function App() {
     setDialog({ type: "none" });
   }, []);
 
-  const handleMigrateRoot = useCallback(async (oldRoot: string, newRoot: string, migrate: boolean) => {
-    setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
-    setDialog({ type: "none" });
-  }, []);
+  const handleMigrateRoot = useCallback(
+    async (oldRoot: string, newRoot: string, migrate: boolean) => {
+      setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
+      setDialog({ type: "none" });
+    },
+    []
+  );
 
   const handleDeleteProject = useCallback(async (projectId: string) => {
     setData(await api.deleteProject(projectId));
@@ -569,13 +600,31 @@ export function App() {
       }
       // 图片通过 asset 协议 URL
       if (previewType === "image") {
-        setPreviewFile({ path, name, loading: false, info: { ...baseInfo, is_image: true }, content: path });
+        setPreviewFile({
+          path,
+          name,
+          loading: false,
+          info: { ...baseInfo, is_image: true },
+          content: path,
+        });
         return;
       }
-      // Excel / Word 需要读取二进制
-      if (previewType === "excel" || previewType === "word") {
+      // Excel / Word / PPTX 需要读取二进制
+      if (previewType === "excel" || previewType === "word" || previewType === "pptx") {
         const binaryBase64 = await api.readFileBinary(path);
         setPreviewFile({ path, name, loading: false, info: baseInfo, content: binaryBase64 });
+        return;
+      }
+      // HTML 从文本读取后渲染
+      if (previewType === "html") {
+        try {
+          const content = await api.readFileContent(path);
+          setPreviewFile({ path, name, content, loading: false, info: baseInfo });
+        } catch {
+          // 如果文件太大或编码问题，退回用二进制
+          const binaryBase64 = await api.readFileBinary(path);
+          setPreviewFile({ path, name, loading: false, info: baseInfo, content: binaryBase64 });
+        }
         return;
       }
       // Markdown / 文本 / 代码 读取文本内容
@@ -594,7 +643,12 @@ export function App() {
   const hasRoot = Boolean(data.settings.workspaceRoot);
 
   return (
-    <div className={`app-shell theme-${themeMode} accent-${accentColor}`}>
+    <div
+      className={`app-shell theme-${themeMode} accent-${accentColor}${sidebarOpen ? " sidebar-open" : ""}`}
+    >
+      {/* 側邊欄遮罩 (窄屏) */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* 側邊欄 */}
       <aside className="sidebar">
         <div className="brand">
@@ -602,7 +656,8 @@ export function App() {
             <Archive size={20} />
           </div>
           <span className="brand-name">
-            {registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}
+            {registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name ||
+              t.appName}
           </span>
         </div>
 
@@ -612,12 +667,25 @@ export function App() {
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
             { id: "inbox" as const, label: t.inbox, icon: Inbox },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
-            { id: "settings" as const, label: t.settings, icon: Settings }
+            { id: "settings" as const, label: t.settings, icon: Settings },
           ].map((item) => (
             <button
               className={view === item.id ? "nav-item active" : "nav-item"}
               key={item.id}
-              onClick={() => setView(item.id)}
+              onClick={() => {
+                setSidebarOpen(false);
+                if (item.id === "projects") {
+                  const projects = data.projects;
+                  if (projects.length > 0) {
+                    const recent = [...projects].sort((a, b) =>
+                      (b.lastOpenedAt || "").localeCompare(a.lastOpenedAt || "")
+                    )[0];
+                    openProject(recent);
+                    return;
+                  }
+                }
+                setView(item.id);
+              }}
             >
               <item.icon size={18} />
               {item.label}
@@ -628,11 +696,26 @@ export function App() {
         <div className="side-section">
           <div className="side-title">{t.projectList}</div>
           {sidebarProjects.length === 0 ? (
-            <p className="muted small">{language === "zh" ? "沒有匹配的項目。" : "No matching projects."}</p>
+            <p className="muted small">
+              {language === "zh" ? "沒有匹配的項目。" : "No matching projects."}
+            </p>
           ) : (
             sidebarProjects.map((project) => (
-              <div className={project.id === activeProject?.id ? "project-shortcut-row active" : "project-shortcut-row"} key={project.id}>
-                <button className="project-shortcut-main" onClick={() => openProject(project)}>
+              <div
+                className={
+                  project.id === activeProject?.id
+                    ? "project-shortcut-row active"
+                    : "project-shortcut-row"
+                }
+                key={project.id}
+              >
+                <button
+                  className="project-shortcut-main"
+                  onClick={() => {
+                    setSidebarOpen(false);
+                    openProject(project);
+                  }}
+                >
                   <Star size={15} fill={project.pinned ? "currentColor" : "none"} />
                   <span>{project.name}</span>
                 </button>
@@ -666,7 +749,10 @@ export function App() {
           </button>
           <button className="sidebar-ws-btn" onClick={() => setWsDropdownOpen(!wsDropdownOpen)}>
             <Database size={14} />
-            <span>{registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name || t.appName}</span>
+            <span>
+              {registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name ||
+                t.appName}
+            </span>
             <ChevronDown size={13} />
           </button>
         </div>
@@ -682,7 +768,11 @@ export function App() {
               >
                 <Archive size={15} />
                 <span>{ws.name}</span>
-                {ws.id === registry.activeWorkspaceId && <span className="ws-check"><Check size={13} /></span>}
+                {ws.id === registry.activeWorkspaceId && (
+                  <span className="ws-check">
+                    <Check size={13} />
+                  </span>
+                )}
               </button>
             ))}
             <button className="ws-item ws-create" onClick={() => setWsCreating(true)}>
@@ -696,12 +786,19 @@ export function App() {
                   onChange={(e) => setWsNewName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreateWorkspace();
-                    if (e.key === "Escape") { setWsCreating(false); setWsNewName(""); }
+                    if (e.key === "Escape") {
+                      setWsCreating(false);
+                      setWsNewName("");
+                    }
                   }}
                   placeholder={t.databaseNamePlaceholder}
                   autoFocus
                 />
-                <button className="primary compact-button" onClick={handleCreateWorkspace} disabled={!wsNewName.trim()}>
+                <button
+                  className="primary compact-button"
+                  onClick={handleCreateWorkspace}
+                  disabled={!wsNewName.trim()}
+                >
                   {t.confirm}
                 </button>
               </div>
@@ -715,11 +812,20 @@ export function App() {
         {!hasRoot && (
           <div className="warning-banner">
             <span>{t.noRootWarning}</span>
-            <button className="warning-banner-btn" onClick={() => setView("settings")}>{t.goToSettings}</button>
+            <button className="warning-banner-btn" onClick={() => setView("settings")}>
+              {t.goToSettings}
+            </button>
           </div>
         )}
 
         <header className="topbar">
+          <button
+            className="hamburger-btn"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="打开菜单"
+          >
+            <Menu size={20} />
+          </button>
           {view === "projects" && activeProject ? (
             <div className="topbar-breadcrumb">
               <button className="breadcrumb-btn" onClick={() => setView("home")}>
@@ -731,13 +837,32 @@ export function App() {
             </div>
           ) : (
             <div className="command-search" onClick={() => setSpotlightOpen(true)}>
-              <span className="command-search-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+              <span className="command-search-icon">
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+              </span>
               <span className="command-search-placeholder">{t.searchPlaceholder}</span>
               <kbd className="command-search-kbd">Ctrl+K</kbd>
             </div>
           )}
           <div className="topbar-actions">
-            <button className="primary" onClick={() => setNewProjectOpen(true)} disabled={!hasRoot} title={hasRoot ? undefined : t.noRootWarning}>
+            <button
+              className="primary"
+              onClick={() => setNewProjectOpen(true)}
+              disabled={!hasRoot}
+              title={hasRoot ? undefined : t.noRootWarning}
+            >
               <Plus size={16} />
               {t.newProject}
             </button>
@@ -750,7 +875,7 @@ export function App() {
             data={data}
             recentProjects={recentProjects}
             onOpenProject={openProject}
-            onNewProject={() => hasRoot ? setNewProjectOpen(true) : setView("settings")}
+            onNewProject={() => (hasRoot ? setNewProjectOpen(true) : setView("settings"))}
             onImport={addInboxFiles}
             t={t}
           />
@@ -794,10 +919,14 @@ export function App() {
             accentColor={accentColor}
             setAccentColor={setAccentColor}
             t={t}
-            onRename={(id, name) => setDialog({ type: "rename-workspace", workspaceId: id, currentName: name })}
+            onRename={(id, name) =>
+              setDialog({ type: "rename-workspace", workspaceId: id, currentName: name })
+            }
             onDelete={(id, name) => setDialog({ type: "delete-workspace", workspaceId: id, name })}
             onSwitch={handleSwitchWorkspace}
-            onMigrateRoot={(oldRoot, newRoot, fileCount) => setDialog({ type: "migrate-root", oldRoot, newRoot, fileCount })}
+            onMigrateRoot={(oldRoot, newRoot, fileCount) =>
+              setDialog({ type: "migrate-root", oldRoot, newRoot, fileCount })
+            }
             categories={data.settings.categories}
             onEditCategories={() => setCategoryEditOpen(true)}
           />
@@ -819,7 +948,11 @@ export function App() {
         <NewProjectDialog
           root={data.settings.workspaceRoot}
           onClose={() => setNewProjectOpen(false)}
-          onCreated={(next) => { setData(next); setNewProjectOpen(false); setView("projects"); }}
+          onCreated={(next) => {
+            setData(next);
+            setNewProjectOpen(false);
+            setView("projects");
+          }}
           onSubmit={api.createProject}
         />
       )}
@@ -878,7 +1011,10 @@ export function App() {
           onDelete={handleDeleteCategory}
           onEdit={openEditCategory}
           onAdd={openAddCategory}
-          onClose={() => { setCategoryEditOpen(false); setCategoryEditing(null); }}
+          onClose={() => {
+            setCategoryEditOpen(false);
+            setCategoryEditing(null);
+          }}
         />
       )}
 
@@ -888,8 +1024,11 @@ export function App() {
         onClose={() => setSpotlightOpen(false)}
         data={data}
         onOpenProject={openProject}
+        onSelectInbox={(itemId) => {
+          setView("inbox");
+          setSelectedInbox([itemId]);
+        }}
       />
     </div>
   );
 }
-

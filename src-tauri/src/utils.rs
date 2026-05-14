@@ -90,6 +90,12 @@ pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "aac", "m4a
 /// Markdown 文件扩展名
 pub const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown"];
 
+/// PPTX 文件扩展名
+pub const PPTX_EXTENSIONS: &[&str] = &["pptx"];
+
+/// HTML 文件扩展名
+pub const HTML_EXTENSIONS: &[&str] = &["html", "htm"];
+
 /// 不可预览的文件扩展名
 pub const UNSUPPORTED_EXTENSIONS: &[&str] = &[
     "exe", "msi", "dll", "sys",    // 可执行文件

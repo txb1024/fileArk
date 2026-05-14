@@ -8,8 +8,9 @@ import {
   FileAudio,
   FileArchive,
   FileSpreadsheet,
-  FileType,
-  type LucideIcon
+  Monitor,
+  Presentation,
+  type LucideIcon,
 } from "lucide-react";
 import type React from "react";
 
@@ -32,8 +33,8 @@ export function getFileIcon(
     xls: { icon: FileSpreadsheet, color: "#16a34a" },
     csv: { icon: FileSpreadsheet, color: "#16a34a" },
     // 演示
-    pptx: { icon: FileType, color: "#dc2626" },
-    ppt: { icon: FileType, color: "#dc2626" },
+    pptx: { icon: Presentation, color: "#dc2626" },
+    ppt: { icon: Presentation, color: "#dc2626" },
     // 文档
     docx: { icon: FileText, color: "#2563eb" },
     doc: { icon: FileText, color: "#2563eb" },
@@ -47,7 +48,8 @@ export function getFileIcon(
     ts: { icon: FileCode, color: "#7c3aed" },
     jsx: { icon: FileCode, color: "#7c3aed" },
     tsx: { icon: FileCode, color: "#7c3aed" },
-    html: { icon: FileCode, color: "#7c3aed" },
+    html: { icon: Monitor, color: "#e65100" },
+    htm: { icon: Monitor, color: "#e65100" },
     css: { icon: FileCode, color: "#7c3aed" },
     json: { icon: FileCode, color: "#7c3aed" },
     xml: { icon: FileCode, color: "#7c3aed" },
@@ -75,7 +77,7 @@ export function getFileIcon(
     rar: { icon: FileArchive, color: "#ca8a04" },
     "7z": { icon: FileArchive, color: "#ca8a04" },
     tar: { icon: FileArchive, color: "#ca8a04" },
-    gz: { icon: FileArchive, color: "#ca8a04" }
+    gz: { icon: FileArchive, color: "#ca8a04" },
   };
 
   const match = icons[ext];
