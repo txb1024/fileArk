@@ -74,4 +74,11 @@ export const api: ArchiveApi = {
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("copy_file_to", { input }),
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("move_file_to", { input }),
   readClipboardFiles: () => invoke<string[]>("read_clipboard_files"),
+  startWatching: (path: string) => invoke<void>("start_watching", { path }),
+  stopWatching: () => invoke<void>("stop_watching"),
+  searchProjectFiles: (query: string) =>
+    invoke<Array<{ name: string; path: string; projectName: string; category: string; size: number; isDirectory: boolean }>>(
+      "search_project_files",
+      { query }
+    ),
 };

@@ -289,5 +289,10 @@ export type ArchiveApi = {
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   readClipboardFiles: () => Promise<string[]>;
+  startWatching: (path: string) => Promise<void>;
+  stopWatching: () => Promise<void>;
+  searchProjectFiles: (query: string) => Promise<
+    Array<{ name: string; path: string; projectName: string; category: string; size: number; isDirectory: boolean }>
+  >;
 };
 

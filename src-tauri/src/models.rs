@@ -140,6 +140,19 @@ pub struct PreviewInfo {
     pub preview_type: String,
 }
 
+// ── 搜索 ────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFileResult {
+    pub name: String,
+    pub path: String,
+    pub project_name: String,
+    pub category: String,
+    pub size: i64,
+    pub is_directory: bool,
+}
+
 // ── 输入 DTO ────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug)]

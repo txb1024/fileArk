@@ -16,7 +16,6 @@ import {
   Pencil,
   Pin,
   Plus,
-  Search,
   Settings,
   Sparkles,
   Star,
@@ -30,10 +29,12 @@ import {
   LayoutGrid
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { AppData, CategoryFile, Project, TrashItem, WorkspaceRegistry } from "./types";
-import { HomeView, TrashView, InboxView, SearchView, SettingsView } from "./views";
+import { HomeView, TrashView, InboxView, SettingsView } from "./views";
 import { ProjectsView } from "./components/projects/ProjectsView";
+import { SpotlightSearch } from "./components/SpotlightSearch";
 import {
   ConfirmDeleteDialog,
   NewProjectDialog,
@@ -361,14 +362,15 @@ export function App() {
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
   const [wsCreating, setWsCreating] = useState(false);
   const [wsNewName, setWsNewName] = useState("");
-  const [query, setQuery] = useState("");
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
   const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(null);
   const [categoryNewName, setCategoryNewName] = useState("");
 
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [spotlightOpen, setSpotlightOpen] = useState(false);
+  const [fileChangeEpoch, setFileChangeEpoch] = useState(0);
+
   const t = messages[language] as Messages;
 
   // 初始化
@@ -377,6 +379,27 @@ export function App() {
     api.getData().then(setData);
     api.getTrashItems().then(setTrashItems);
   }, []);
+
+  // 文件系统监听：当 workspace_root 可用时启动，目录有变化时自动刷新
+  useEffect(() => {
+    const root = data.settings.workspaceRoot;
+    if (!root) return;
+
+    let unlisten: (() => void) | undefined;
+
+    (async () => {
+      await api.startWatching(root);
+      unlisten = await listen<string[]>("fs-changed", () => {
+        setFileChangeEpoch((e) => e + 1);
+        api.getData().then(setData).catch(() => {});
+      });
+    })().catch(() => {});
+
+    return () => {
+      unlisten?.();
+      api.stopWatching().catch(() => {});
+    };
+  }, [data.settings.workspaceRoot]);
 
   // 保存偏好
   useEffect(() => {
@@ -401,38 +424,20 @@ export function App() {
       .slice(0, 6);
   }, [data.projects]);
 
-  const searchResults = useMemo(() => {
-    const trimmed = query.trim();
-    if (!trimmed) return { projects: [], files: [], inbox: [] as typeof data.inbox };
-
-    const text = trimmed.toLowerCase();
-    const files = data.projects.flatMap((project) =>
-      (project.recentFiles || [])
-        .filter((file) => `${file.name} ${file.category} ${project.name}`.toLowerCase().includes(text))
-        .map((file) => ({ ...file, projectName: project.name }))
-    );
-
-    return {
-      projects: data.projects.filter((p) =>
-        [p.name, p.alias, p.path, ...p.tags].some((s) => s.toLowerCase().includes(text))
-      ),
-      files,
-      inbox: data.inbox.filter((item) => item.name.toLowerCase().includes(text))
-    };
-  }, [data, query]);
-
   // 快捷鍵
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.ctrlKey && e.key === "k") {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
-        searchInputRef.current?.focus();
-        setView("search");
+        setSpotlightOpen(true);
+      }
+      if (e.key === "Escape" && spotlightOpen) {
+        setSpotlightOpen(false);
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [spotlightOpen]);
 
   // 業務方法
   const openProject = useCallback(async (project: Project) => {
@@ -607,7 +612,6 @@ export function App() {
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
             { id: "inbox" as const, label: t.inbox, icon: Inbox },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
-            { id: "search" as const, label: t.search, icon: Search },
             { id: "settings" as const, label: t.settings, icon: Settings }
           ].map((item) => (
             <button
@@ -726,14 +730,10 @@ export function App() {
               <span className="breadcrumb-current">{activeProject.name}</span>
             </div>
           ) : (
-            <div className="command-search">
-              <Search size={18} />
-              <input
-                ref={searchInputRef}
-                value={query}
-                onChange={(event) => { setQuery(event.target.value); setView("search"); }}
-                placeholder={t.searchPlaceholder}
-              />
+            <div className="command-search" onClick={() => setSpotlightOpen(true)}>
+              <span className="command-search-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+              <span className="command-search-placeholder">{t.searchPlaceholder}</span>
+              <kbd className="command-search-kbd">Ctrl+K</kbd>
             </div>
           )}
           <div className="topbar-actions">
@@ -766,6 +766,7 @@ export function App() {
             copiedFile={copiedFile}
             onCopyFile={setCopiedFile}
             onPreviewFile={handlePreviewFile}
+            fileChangeEpoch={fileChangeEpoch}
           />
         )}
 
@@ -777,16 +778,6 @@ export function App() {
             onImport={addInboxFiles}
             onOrganize={organizeInbox}
             onDataChange={setData}
-            t={t}
-          />
-        )}
-
-        {view === "search" && (
-          <SearchView
-            query={query}
-            setQuery={setQuery}
-            results={searchResults}
-            onOpenProject={openProject}
             t={t}
           />
         )}
@@ -873,6 +864,7 @@ export function App() {
           file={previewFile}
           onClose={() => setPreviewFile(null)}
           onOpenExternal={() => api.openFile(previewFile.path)}
+          themeMode={themeMode}
         />
       )}
 
@@ -889,6 +881,14 @@ export function App() {
           onClose={() => { setCategoryEditOpen(false); setCategoryEditing(null); }}
         />
       )}
+
+      {/* Spotlight 全局搜索 */}
+      <SpotlightSearch
+        isOpen={spotlightOpen}
+        onClose={() => setSpotlightOpen(false)}
+        data={data}
+        onOpenProject={openProject}
+      />
     </div>
   );
 }

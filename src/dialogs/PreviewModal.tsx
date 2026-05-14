@@ -103,11 +103,21 @@ function ExcelPreview({ base64, ext }: { base64: string; ext: string }) {
     return <div className="preview-error"><p>Excel 解析失败</p><small>{error}</small></div>;
   }
   if (sheets.length === 0) {
-    return <div className="preview-loading">解析中...</div>;
+    return <div className="preview-loading"><div className="preview-spinner" /><span>解析中...</span></div>;
   }
 
   const current = sheets[activeSheet];
   const maxCols = Math.max(...current.data.map((row) => row.length), 1);
+
+  const colLetter = (i: number): string => {
+    let n = i;
+    let s = "";
+    while (n >= 0) {
+      s = String.fromCharCode(65 + (n % 26)) + s;
+      n = Math.floor(n / 26) - 1;
+    }
+    return s;
+  };
 
   return (
     <div className="preview-excel-container">
@@ -126,9 +136,18 @@ function ExcelPreview({ base64, ext }: { base64: string; ext: string }) {
       )}
       <div className="excel-table-wrapper">
         <table className="excel-table">
+          <thead>
+            <tr>
+              <th className="excel-col-header"></th>
+              {Array.from({ length: maxCols }, (_, ci) => (
+                <th key={ci} className="excel-col-header">{colLetter(ci)}</th>
+              ))}
+            </tr>
+          </thead>
           <tbody>
             {current.data.map((row, ri) => (
               <tr key={ri} className={ri === 0 ? "excel-header-row" : ""}>
+                <td className="excel-row-number">{ri + 1}</td>
                 {Array.from({ length: maxCols }, (_, ci) => (
                   <td key={ci} className={ri === 0 ? "excel-header-cell" : ""}>
                     {row[ci] ?? ""}
@@ -148,7 +167,7 @@ function ExcelPreview({ base64, ext }: { base64: string; ext: string }) {
 
 // ── 子组件：Word ──────────────────────────────────────────
 
-function WordPreview({ base64 }: { base64: string }) {
+function WordPreview({ base64, themeMode }: { base64: string; themeMode?: string }) {
   const [html, setHtml] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
@@ -158,7 +177,8 @@ function WordPreview({ base64 }: { base64: string }) {
       if (cancelled) return;
       try {
         const bytes = base64ToUint8Array(base64);
-        mammoth.convertToHtml({ arrayBuffer: bytes.buffer as ArrayBuffer }).then(
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        mammoth.convertToHtml({ arrayBuffer: buf }).then(
           (result: { value: string; messages: unknown[] }) => {
             if (!cancelled) setHtml(result.value);
           },
@@ -175,25 +195,28 @@ function WordPreview({ base64 }: { base64: string }) {
     return <div className="preview-error"><p>Word 解析失败</p><small>{error}</small></div>;
   }
   if (!html) {
-    return <div className="preview-loading">解析中...</div>;
+    return <div className="preview-loading"><div className="preview-spinner" /><span>解析中...</span></div>;
   }
   return (
     <div className="preview-word-container">
-      <div className="word-page" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className={`word-page ${themeMode === "dark" ? "theme-dark" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }
 
-// ── 子组件：图片（带缩放） ──────────────────────────────────
+// ── 子组件：图片（缩放 + 拖拽平移） ────────────────────────────
 
 function ImagePreview({ path, name }: { path: string; name: string }) {
   const src = convertFileSrc(path);
   const [scale, setScale] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
   const zoomIn = useCallback(() => setScale((s) => Math.min(s + 0.25, 5)), []);
   const zoomOut = useCallback(() => setScale((s) => Math.max(s - 0.25, 0.25)), []);
-  const resetZoom = useCallback(() => setScale(1), []);
+  const resetZoom = useCallback(() => { setScale(1); setPan({ x: 0, y: 0 }); }, []);
 
   // Ctrl+滚轮缩放
   useEffect(() => {
@@ -202,18 +225,39 @@ function ImagePreview({ path, name }: { path: string; name: string }) {
     const handler = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        setScale((s) => {
-          const delta = e.deltaY > 0 ? -0.1 : 0.1;
-          return Math.max(0.25, Math.min(5, s + delta));
-        });
+        setScale((s) => Math.max(0.25, Math.min(5, s + (e.deltaY > 0 ? -0.1 : 0.1))));
       }
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
   }, []);
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1) return;
+    e.preventDefault();
+    setDragging(true);
+    dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragging) return;
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+    setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy });
+  };
+
+  const handleMouseUp = () => setDragging(false);
+
   return (
-    <div className="preview-image-container" ref={containerRef}>
+    <div
+      className="preview-image-container"
+      ref={containerRef}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      style={{ cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "default" }}
+    >
       <div className="image-zoom-controls">
         <button className="compact-button secondary" onClick={zoomOut} title="缩小"><ZoomOut size={14} /></button>
         <span className="zoom-label">{Math.round(scale * 100)}%</span>
@@ -224,7 +268,12 @@ function ImagePreview({ path, name }: { path: string; name: string }) {
         src={src}
         alt={name}
         className="preview-image"
-        style={{ transform: `scale(${scale})`, transformOrigin: "center center" }}
+        draggable={false}
+        style={{
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+          transformOrigin: "center center",
+          cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "default",
+        }}
       />
     </div>
   );
@@ -253,12 +302,29 @@ function AudioPreview({ path }: { path: string }) {
   );
 }
 
-// ── 子组件：Markdown ──────────────────────────────────────
+// ── 子组件：Markdown（带代码高亮） ───────────────────────────
 
 function MarkdownPreview({ content }: { content: string }) {
   return (
     <div className="preview-markdown-container">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || "");
+            const codeStr = String(children).replace(/\n$/, "");
+            if (match && hljs.getLanguage(match[1])) {
+              const html = hljs.highlight(codeStr, { language: match[1] }).value;
+              return (
+                <pre><code className={className} dangerouslySetInnerHTML={{ __html: html }} {...props} /></pre>
+              );
+            }
+            return <code className={className} {...props}>{children}</code>;
+          }
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -267,6 +333,7 @@ function MarkdownPreview({ content }: { content: string }) {
 
 function CodePreview({ content, ext }: { content: string; ext: string }) {
   const [highlighted, setHighlighted] = useState<string>("");
+  const lines = useMemo(() => content.split("\n"), [content]);
 
   useEffect(() => {
     const lang = extToLang(ext);
@@ -284,9 +351,16 @@ function CodePreview({ content, ext }: { content: string; ext: string }) {
   }, [content, ext]);
 
   return (
-    <pre className="preview-text code-highlight">
-      <code dangerouslySetInnerHTML={{ __html: highlighted || content }} />
-    </pre>
+    <div className="code-viewer">
+      <div className="code-line-numbers">
+        {lines.map((_, i) => (
+          <span key={i}>{i + 1}</span>
+        ))}
+      </div>
+      <pre className="preview-text code-highlight">
+        <code dangerouslySetInnerHTML={{ __html: highlighted || content }} />
+      </pre>
+    </div>
   );
 }
 
@@ -341,6 +415,15 @@ export function PreviewModal({ file, onClose, onOpenExternal, themeMode }: Previ
     }
   }, [themeMode]);
 
+  // Escape 关闭
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   // Modal header extra: 外部打开按钮
   const headerExtra = (
     <button className="secondary compact-button" onClick={onOpenExternal} title="用系统程序打开">
@@ -349,10 +432,15 @@ export function PreviewModal({ file, onClose, onOpenExternal, themeMode }: Previ
     </button>
   );
 
+  const fileIcon = getFileIcon(file.name, false, 14);
+  const fileSize = file.info?.size != null ? formatSize(file.info.size) : null;
+
   return (
     <Modal title={file.name} onClose={onClose} style={modalStyle} headerExtra={headerExtra}>
       <div className="preview-content">
-        {file.loading && <div className="preview-loading">加载中...</div>}
+        {file.loading && (
+          <div className="preview-loading"><div className="preview-spinner" /><span>加载中...</span></div>
+        )}
         {file.error && (
           <div className="preview-error">
             <p>预览失败</p>
@@ -366,7 +454,7 @@ export function PreviewModal({ file, onClose, onOpenExternal, themeMode }: Previ
             case "excel":
               return file.content ? <ExcelPreview base64={file.content} ext={ext} /> : null;
             case "word":
-              return file.content ? <WordPreview base64={file.content} /> : null;
+              return file.content ? <WordPreview base64={file.content} themeMode={themeMode} /> : null;
             case "image":
               return <ImagePreview path={file.path} name={file.name} />;
             case "video":
@@ -384,6 +472,16 @@ export function PreviewModal({ file, onClose, onOpenExternal, themeMode }: Previ
           }
         })()}
       </div>
+      {!file.loading && !file.error && (
+        <div className="preview-info-bar">
+          {fileIcon}
+          <span>{file.name}</span>
+          {fileSize && <span>{fileSize}</span>}
+          <span>.{ext}</span>
+          <div className="preview-info-bar-spacer" />
+          <span style={{ fontSize: 11, opacity: 0.6 }}>Esc 关闭</span>
+        </div>
+      )}
     </Modal>
   );
 }

@@ -14,13 +14,21 @@ mod utils;
 
 use models::*;
 use store::*;
+use notify::{RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::Instant;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use uuid::Uuid;
+
+/// 文件系统监听器状态
+struct FsWatcherState {
+    watcher: Option<notify::RecommendedWatcher>,
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  Tauri Commands - 工作空间
@@ -566,6 +574,62 @@ fn read_file_binary(file_path: String) -> Result<String, String> {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Tauri Commands - 搜索
+// ═══════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn search_project_files(app: tauri::AppHandle, query: String) -> Result<Vec<SearchFileResult>, String> {
+    let data = read_data(&app)?;
+    let lower = query.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut results: Vec<SearchFileResult> = Vec::new();
+    let max_results = 20;
+
+    for project in &data.projects {
+        let project_path = Path::new(&project.path);
+        if !project_path.exists() {
+            continue;
+        }
+        for category in &data.settings.categories {
+            let cat_path = project_path.join(category);
+            if !cat_path.exists() || !cat_path.is_dir() {
+                continue;
+            }
+            let entries = match fs::read_dir(&cat_path) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.to_lowercase().contains(&lower) {
+                    continue;
+                }
+                let path = entry.path();
+                let ft = entry.file_type().ok();
+                let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+                let metadata = entry.metadata().ok();
+                results.push(SearchFileResult {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    project_name: project.name.clone(),
+                    category: category.clone(),
+                    size: metadata.map(|m| m.len() as i64).unwrap_or(0),
+                    is_directory: is_dir,
+                });
+                if results.len() >= max_results {
+                    return Ok(results);
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Tauri Commands - 收件箱
 // ═══════════════════════════════════════════════════════════════
 
@@ -585,7 +649,8 @@ fn add_inbox_files(app: tauri::AppHandle, file_paths: Vec<String>) -> Result<App
             continue;
         }
         let name = src_path.file_name().unwrap().to_string_lossy().to_string();
-        let recommended = infer_project(&name, &data.projects).map(|p| p.id.clone());
+        let recommended = infer_project(&name, Some(&source_path), &data.projects)
+            .map(|p| p.id.clone());
         let recommended_category = infer_category(&name, &data.settings.categories);
         additions.push(InboxItem {
             id: Uuid::new_v4().to_string(),
@@ -888,6 +953,94 @@ fn empty_trash(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Tauri Commands - 文件系统监听
+// ═══════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn start_watching(
+    state: tauri::State<'_, Mutex<FsWatcherState>>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    let target = Path::new(&path);
+    if !target.exists() || !target.is_dir() {
+        return Err(format!("目录不存在: {}", path));
+    }
+
+    // 先停掉旧的监听器
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        *guard = FsWatcherState { watcher: None };
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let mut watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+        if let Ok(event) = res {
+            let _ = tx.send(event);
+        }
+    })
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(target, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    // 存储 watcher，keep it alive
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        guard.watcher = Some(watcher);
+    }
+
+    // 后台线程：收集 + 防抖，合并到主事件
+    std::thread::spawn(move || {
+        let mut paths: Vec<String> = Vec::new();
+        let mut last_emit = Instant::now();
+        let debounce_ms = 300;
+
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(debounce_ms)) {
+                Ok(event) => {
+                    for p in &event.paths {
+                        let s = p.to_string_lossy().to_string();
+                        if !paths.contains(&s) {
+                            paths.push(s);
+                        }
+                    }
+                    if last_emit.elapsed().as_millis() as u64 >= debounce_ms && !paths.is_empty() {
+                        let _ = app.emit("fs-changed", paths.clone());
+                        paths.clear();
+                        last_emit = Instant::now();
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if !paths.is_empty() {
+                        let _ = app.emit("fs-changed", paths.clone());
+                        paths.clear();
+                        last_emit = Instant::now();
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    if !paths.is_empty() {
+                        let _ = app.emit("fs-changed", paths);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_watching(state: tauri::State<'_, Mutex<FsWatcherState>>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    *guard = FsWatcherState { watcher: None };
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  入口
 // ═══════════════════════════════════════════════════════════════
 
@@ -908,6 +1061,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app: &mut tauri::App| {
+            app.manage(Mutex::new(FsWatcherState { watcher: None }));
+
             let icon = app.default_window_icon().cloned().unwrap();
             let app_handle = app.handle().clone();
 
@@ -1035,6 +1190,9 @@ fn main() {
             restore_project,
             permanently_delete_trash_item,
             empty_trash,
+            start_watching,
+            stop_watching,
+            search_project_files,
         ])
         .run(tauri::generate_context!())
         .expect("tauri 启动失败");

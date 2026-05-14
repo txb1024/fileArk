@@ -15,11 +15,14 @@ import {
   Search,
   Trash2,
   X,
+  XCircle,
 } from "lucide-react";
 import { api } from "../../api";
 import { getDroppedFilePaths, setupDragDrop } from "../../utils";
+import { getFileIcon } from "../../utils/fileIcon";
 import type { AppData, CategoryFile, Language, Project } from "../../types";
 import { ConfirmDangerDialog } from "../../dialogs";
+import { EmptyState } from "../../components";
 import { storage } from "../../utils";
 
 type SortMode = "name" | "time" | "size";
@@ -61,6 +64,7 @@ interface ProjectsViewProps {
   copiedFile: { path: string; name: string } | null;
   onCopyFile: (file: { path: string; name: string } | null) => void;
   onPreviewFile: (path: string, name: string) => void;
+  fileChangeEpoch: number;
 }
 
 export function ProjectsView({
@@ -72,6 +76,7 @@ export function ProjectsView({
   copiedFile,
   onCopyFile,
   onPreviewFile,
+  fileChangeEpoch,
 }: ProjectsViewProps) {
   const [selectedCategory, setSelectedCategory] = useState(
     data.settings.categories[0] || ""
@@ -105,9 +110,12 @@ export function ProjectsView({
   );
   const draggingFileRef = useRef<CategoryFile | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteFile, setPendingDeleteFile] =
     useState<CategoryFile | null>(null);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
 
   // ── Effects ──────────────────────────────────────────────
 
@@ -131,7 +139,7 @@ export function ProjectsView({
         .then(setCategoryCounts)
         .catch(() => setCategoryCounts({}));
     }
-  }, [activeProject.id, data.settings.categories]);
+  }, [activeProject.id, data.settings.categories, fileChangeEpoch]);
 
   useEffect(() => {
     storage.set("archive.fileScale", fileScale);
@@ -146,7 +154,7 @@ export function ProjectsView({
     api
       .listCategoryFiles(activeProject.path, selectedCategory)
       .then(setCategoryFiles);
-  }, [activeProject, selectedCategory]);
+  }, [activeProject, selectedCategory, fileChangeEpoch]);
 
   // 窗口聚焦时静默刷新当前分类文件
   useEffect(() => {
@@ -309,6 +317,86 @@ export function ProjectsView({
       children: sortFiles((folder.children || []).filter(matchesFilter)),
     }));
 
+  // ── 选择逻辑 ────────────────────────────────────────────
+
+  // 构建所有可见文件的扁平列表（用于范围选择）
+  const allVisibleFiles = useMemo(() => {
+    const list: CategoryFile[] = [];
+    rootFiles.forEach((f) => list.push(f));
+    folderSections.forEach((folder) => {
+      list.push(folder);
+      (folder.children || []).forEach((f) => list.push(f));
+    });
+    return list;
+  }, [rootFiles, folderSections]);
+
+  function clearSelection() {
+    setSelectedFiles(new Set());
+    setLastSelectedIndex(null);
+  }
+
+  function handleFileClick(file: CategoryFile, index: number, e: React.MouseEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+Click: 切换单个
+      setSelectedFiles((prev) => {
+        const next = new Set(prev);
+        next.has(file.path) ? next.delete(file.path) : next.add(file.path);
+        return next;
+      });
+      setLastSelectedIndex(index);
+    } else if (e.shiftKey && lastSelectedIndex !== null) {
+      // Shift+Click: 范围选择
+      const start = Math.min(lastSelectedIndex, index);
+      const end = Math.max(lastSelectedIndex, index);
+      const paths = allVisibleFiles.slice(start, end + 1).map((f) => f.path);
+      setSelectedFiles(new Set(paths));
+    } else {
+      setSelectedFiles(new Set([file.path]));
+      setLastSelectedIndex(index);
+    }
+  }
+
+  function handleFileDoubleClick(file: CategoryFile) {
+    clearSelection();
+    if (file.isDirectory) {
+      toggleFolderExpanded(file.path);
+    } else {
+      api.openFile(file.path);
+    }
+  }
+
+  async function handleDeleteSelected() {
+    if (selectedFiles.size === 0) return;
+    for (const path of selectedFiles) {
+      await api.deleteFile(path).catch(() => {});
+    }
+    clearSelection();
+    await refreshCategoryFiles();
+    setBatchDeleteOpen(false);
+  }
+
+  function handleCopySelected() {
+    if (selectedFiles.size === 0) return;
+    // 复制第一个选中的文件（后续可扩展到多文件）
+    const firstPath = [...selectedFiles][0];
+    const file = allVisibleFiles.find((f) => f.path === firstPath);
+    if (file && !file.isDirectory) {
+      onCopyFile({ path: file.path, name: file.name });
+    }
+    clearSelection();
+  }
+
+  // 键盘快捷键
+  function handleFilePanelKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      clearSelection();
+    }
+    if (e.key === "Delete" && selectedFiles.size > 0) {
+      e.preventDefault();
+      setBatchDeleteOpen(true);
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────
 
   return (
@@ -358,11 +446,33 @@ export function ProjectsView({
           </div>
 
           {/* 文件面板 */}
-          <section className="panel">
+          <section className="panel" onKeyDown={handleFilePanelKeyDown} tabIndex={-1}>
             <div className="panel-title">
               <FolderOpen size={18} />
-              <h2>{selectedCategory || t.name}</h2>
+              <div>
+                <div className="panel-project-name">{activeProject.name}</div>
+                <h2>{selectedCategory || t.name}</h2>
+              </div>
             </div>
+
+            {/* 批量选择操作栏 */}
+            {selectedFiles.size > 0 && (
+              <div className="selection-bar">
+                <span className="selection-bar-count">已选择 {selectedFiles.size} 个文件</span>
+                <button className="icon-button" onClick={clearSelection} title="取消选择">
+                  <XCircle size={16} />
+                </button>
+                <div className="selection-bar-spacer" />
+                <button className="secondary compact-button" onClick={handleCopySelected} disabled={selectedFiles.size !== 1}>
+                  <Copy size={14} />
+                  复制
+                </button>
+                <button className="secondary compact-button danger-hover" onClick={() => setBatchDeleteOpen(true)}>
+                  <Trash2 size={14} />
+                  删除
+                </button>
+              </div>
+            )}
 
             {/* 工具栏 */}
             <div className="file-toolbar">
@@ -382,29 +492,41 @@ export function ProjectsView({
                   </button>
                 )}
               </div>
-              <div className="view-toggle-group">
-                <button
-                  className={`view-toggle-btn ${fileViewMode === "list" ? "active" : ""}`}
-                  onClick={() => setFileViewMode("list")}
-                >
-                  <LayoutList size={16} />
-                </button>
-                <button
-                  className={`view-toggle-btn ${fileViewMode === "grid" ? "active" : ""}`}
-                  onClick={() => setFileViewMode("grid")}
-                >
-                  <LayoutGrid size={16} />
-                </button>
+              <div className="toolbar-display-group">
+                <div className="view-toggle-group">
+                  <button
+                    className={`view-toggle-btn ${fileViewMode === "list" ? "active" : ""}`}
+                    onClick={() => setFileViewMode("list")}
+                    title="列表"
+                  >
+                    <LayoutList size={16} />
+                  </button>
+                  <button
+                    className={`view-toggle-btn ${fileViewMode === "grid" ? "active" : ""}`}
+                    onClick={() => setFileViewMode("grid")}
+                    title="网格"
+                  >
+                    <LayoutGrid size={16} />
+                  </button>
+                </div>
+                <div className="view-toggle-group">
+                  <button
+                    className={`view-toggle-btn ${fileScale === "compact" ? "active" : ""}`}
+                    onClick={() => setFileScale("compact")}
+                    title="紧凑"
+                  >S</button>
+                  <button
+                    className={`view-toggle-btn ${fileScale === "comfortable" ? "active" : ""}`}
+                    onClick={() => setFileScale("comfortable")}
+                    title="舒适"
+                  >M</button>
+                  <button
+                    className={`view-toggle-btn ${fileScale === "large" ? "active" : ""}`}
+                    onClick={() => setFileScale("large")}
+                    title="宽松"
+                  >L</button>
+                </div>
               </div>
-              <select
-                className="toolbar-select"
-                value={fileScale}
-                onChange={(e) => setFileScale(e.target.value as FileScale)}
-              >
-                <option value="compact">S</option>
-                <option value="comfortable">M</option>
-                <option value="large">L</option>
-              </select>
               <button
                 className="icon-button folder-icon-button"
                 onClick={() =>
@@ -492,18 +614,12 @@ export function ProjectsView({
               }}
               onDrop={handleFileDrop}
             >
-              <div className="drop-hint">{t.dragHint}</div>
+              {isDraggingFiles && <div className="drop-hint">{t.dragHint}</div>}
               {filteredFiles.length === 0 ? (
-                <div className="empty">
-                  <strong>
-                    {categoryFiles.length === 0 ? t.emptyCategory : t.noMatch}
-                  </strong>
-                  <p>
-                    {categoryFiles.length === 0
-                      ? t.emptyCategoryBody
-                      : t.noMatchBody}
-                  </p>
-                </div>
+                <EmptyState
+                    title={categoryFiles.length === 0 ? t.emptyCategory : t.noMatch}
+                    body={categoryFiles.length === 0 ? t.emptyCategoryBody : t.noMatchBody}
+                  />
               ) : (
                 <div
                   className={`file-table file-table-${fileScale} file-view-${fileViewMode}`}
@@ -513,22 +629,28 @@ export function ProjectsView({
                     <div className="file-section">
                       <div className="file-section-title">{t.rootFiles}</div>
                       <div className={`file-items file-items-${fileViewMode}`}>
-                        {rootFiles.map((file) => (
-                          <FileRow
-                            key={file.path}
-                            file={file}
-                            fileViewMode={fileViewMode}
-                            fileScale={fileScale}
-                            draggingFile={draggingFile}
-                            onDragStart={handleDragStart}
-                            onDragEnd={handleDragEnd}
-                            onContextMenu={(x, y, f) =>
-                              setContextMenu({ x, y, file: f })
-                            }
-                            onOpenFile={(path) => api.openFile(path)}
-                            onPreviewFile={onPreviewFile}
-                          />
-                        ))}
+                        {rootFiles.map((file) => {
+                          const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
+                          return (
+                            <FileRow
+                              key={file.path}
+                              file={file}
+                              fileViewMode={fileViewMode}
+                              fileScale={fileScale}
+                              index={idx}
+                              isSelected={selectedFiles.has(file.path)}
+                              draggingFile={draggingFile}
+                              onDragStart={handleDragStart}
+                              onDragEnd={handleDragEnd}
+                              onContextMenu={(x, y, f) =>
+                                setContextMenu({ x, y, file: f })
+                              }
+                              onClick={handleFileClick}
+                              onDoubleClick={handleFileDoubleClick}
+                              onPreviewFile={onPreviewFile}
+                            />
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -590,22 +712,28 @@ export function ProjectsView({
                         <div
                           className={`file-items file-items-${fileViewMode}`}
                         >
-                          {(folder.children || []).map((file) => (
-                            <FileRow
-                              key={file.path}
-                              file={file}
-                              fileViewMode={fileViewMode}
-                              fileScale={fileScale}
-                              draggingFile={draggingFile}
-                              onDragStart={handleDragStart}
-                              onDragEnd={handleDragEnd}
-                              onContextMenu={(x, y, f) =>
-                                setContextMenu({ x, y, file: f })
-                              }
-                              onOpenFile={(path) => api.openFile(path)}
-                              onPreviewFile={onPreviewFile}
-                            />
-                          ))}
+                          {(folder.children || []).map((file) => {
+                            const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
+                            return (
+                              <FileRow
+                                key={file.path}
+                                file={file}
+                                fileViewMode={fileViewMode}
+                                fileScale={fileScale}
+                                index={idx}
+                                isSelected={selectedFiles.has(file.path)}
+                                draggingFile={draggingFile}
+                                onDragStart={handleDragStart}
+                                onDragEnd={handleDragEnd}
+                                onContextMenu={(x, y, f) =>
+                                  setContextMenu({ x, y, file: f })
+                                }
+                                onClick={handleFileClick}
+                                onDoubleClick={handleFileDoubleClick}
+                                onPreviewFile={onPreviewFile}
+                              />
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -703,6 +831,18 @@ export function ProjectsView({
           }}
         />
       )}
+
+      {/* 批量删除确认 */}
+      {batchDeleteOpen && (
+        <ConfirmDangerDialog
+          title="批量删除"
+          message={`确定要删除选中的 ${selectedFiles.size} 个文件吗？此操作不可恢复。`}
+          confirmLabel="删除"
+          cancelLabel={t.migrateCancel}
+          onConfirm={handleDeleteSelected}
+          onClose={() => setBatchDeleteOpen(false)}
+        />
+      )}
     </section>
   );
 }
@@ -713,11 +853,14 @@ interface FileRowProps {
   file: CategoryFile;
   fileViewMode: FileViewMode;
   fileScale: FileScale;
+  index: number;
+  isSelected: boolean;
   draggingFile: CategoryFile | null;
   onDragStart: (file: CategoryFile) => void;
   onDragEnd: () => void;
   onContextMenu: (x: number, y: number, file: CategoryFile) => void;
-  onOpenFile: (path: string) => void;
+  onClick: (file: CategoryFile, index: number, e: React.MouseEvent) => void;
+  onDoubleClick: (file: CategoryFile) => void;
   onPreviewFile: (path: string, name: string) => void;
 }
 
@@ -725,16 +868,20 @@ function FileRow({
   file,
   fileViewMode,
   fileScale,
+  index,
+  isSelected,
   draggingFile,
   onDragStart,
   onDragEnd,
   onContextMenu,
-  onOpenFile,
+  onClick,
+  onDoubleClick,
   onPreviewFile,
 }: FileRowProps) {
+  const icon = getFileIcon(file.name, file.isDirectory, fileViewMode === "grid" ? 32 : 16);
   return (
     <div
-      className={`file-table-row file-scale-${fileScale} ${draggingFile?.path === file.path ? "file-dragging" : ""}`}
+      className={`file-table-row file-scale-${fileScale} ${file.isDirectory ? "is-directory" : ""} ${isSelected ? "selected" : ""} ${draggingFile?.path === file.path ? "file-dragging" : ""}`}
       draggable={!file.isDirectory}
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
@@ -745,13 +892,14 @@ function FileRow({
         e.preventDefault();
         onContextMenu(e.clientX, e.clientY, file);
       }}
+      onClick={(e) => onClick(file, index, e)}
+      onDoubleClick={() => onDoubleClick(file)}
+      style={{ cursor: "pointer", userSelect: "none" }}
     >
-      <button
-        className="file-name-cell file-clickable"
-        onClick={() => onOpenFile(file.path)}
-      >
+      <div className="file-name-cell">
+        <span className="file-icon">{icon}</span>
         <span className="file-name-text">{file.name}</span>
-      </button>
+      </div>
       {fileViewMode === "list" && (
         <>
           <small>

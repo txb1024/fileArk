@@ -1,7 +1,8 @@
-import { FileInput, Inbox, Trash2 } from "lucide-react";
+import { FileInput, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { api } from "../api";
 import type { AppData, Messages } from "../types";
+import { EmptyState } from "../components";
 
 interface InboxViewProps {
   data: AppData;
@@ -96,11 +97,7 @@ export function InboxView({ data, selected, onSelectedChange, onImport, onOrgani
 
       <div className="inbox-table">
         {data.inbox.length === 0 ? (
-          <div className="empty-state">
-            <Inbox size={48} strokeWidth={1} />
-            <h3>{t.inboxEmptyTitle}</h3>
-            <p>{t.inboxEmptyBody}</p>
-          </div>
+          <EmptyState title={t.inboxEmptyTitle} body={t.inboxEmptyBody} />
         ) : (
           data.inbox.map((item) => {
             const recommendedProject = data.projects.find((project) => project.id === item.recommendedProjectId);

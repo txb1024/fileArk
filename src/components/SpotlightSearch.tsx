@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Search, FileText, Folder, Inbox, X } from "lucide-react";
-import type { AppData, Project, InboxItem } from "../types";
+import { api } from "../api";
+import type { AppData, Project } from "../types";
 
 interface SearchResult {
   type: "project" | "file" | "inbox";
@@ -9,6 +10,7 @@ interface SearchResult {
   path: string;
   meta?: string;
   size?: number;
+  isDirectory?: boolean;
 }
 
 interface SpotlightSearchProps {
@@ -61,41 +63,22 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// 获取文件图标类型
-function getFileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  const iconMap: Record<string, string> = {
-    pdf: "📄",
-    doc: "📝", docx: "📝",
-    xls: "📊", xlsx: "📊",
-    ppt: "📽️", pptx: "📽️",
-    jpg: "🖼️", jpeg: "🖼️", png: "🖼️", gif: "🖼️", webp: "🖼️",
-    mp4: "🎬", avi: "🎬", mov: "🎬",
-    mp3: "🎵", wav: "🎵",
-    zip: "📦", rar: "📦", "7z": "📦",
-    js: "💻", ts: "💻", jsx: "💻", tsx: "💻",
-    java: "☕", py: "🐍", go: "🔵",
-    md: "📖", txt: "📖",
-  };
-  return iconMap[ext] || "📄";
-}
-
 export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: SpotlightSearchProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [fileResults, setFileResults] = useState<SearchResult[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const scrollTimeoutRef = useRef<number | null>(null);
+  const searchTimerRef = useRef<number | undefined>(undefined);
 
-  // 搜索结果
-  const results = useMemo<SearchResult[]>(() => {
+  // 项目 + 收件箱（同步匹配）
+  const localResults = useMemo<SearchResult[]>(() => {
     const trimmed = query.trim();
     if (!trimmed) return [];
 
     const text = trimmed.toLowerCase();
-    const allResults: SearchResult[] = [];
+    const items: SearchResult[] = [];
 
-    // 搜索项目
     data.projects.forEach((project) => {
       const nameMatch = project.name.toLowerCase().includes(text);
       const aliasMatch = project.alias?.toLowerCase().includes(text);
@@ -103,7 +86,7 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
       const pathMatch = project.path.toLowerCase().includes(text);
 
       if (nameMatch || aliasMatch || tagMatch || pathMatch) {
-        allResults.push({
+        items.push({
           type: "project",
           id: project.id,
           name: project.name,
@@ -113,29 +96,9 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
       }
     });
 
-    // 搜索文件
-    data.projects.forEach((project) => {
-      (project.recentFiles || []).forEach((file) => {
-        const nameMatch = file.name.toLowerCase().includes(text);
-        const categoryMatch = file.category.toLowerCase().includes(text);
-
-        if (nameMatch || categoryMatch) {
-          allResults.push({
-            type: "file",
-            id: file.path,
-            name: file.name,
-            path: file.path,
-            meta: `${project.name} / ${file.category}`,
-            size: file.size,
-          });
-        }
-      });
-    });
-
-    // 搜索收件箱
     data.inbox.forEach((item) => {
       if (item.name.toLowerCase().includes(text)) {
-        allResults.push({
+        items.push({
           type: "inbox",
           id: item.id,
           name: item.name,
@@ -144,10 +107,51 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
       }
     });
 
-    return allResults.slice(0, 20); // 最多返回20个结果
+    return items;
   }, [query, data]);
 
-  const visibleResults = results.slice(0, 6); // 只显示前6个
+  // 文件搜索（异步后端遍历项目目录，防抖 200ms）
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) {
+      setFileResults([]);
+      return;
+    }
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = window.setTimeout(async () => {
+      try {
+        const backendFiles = await api.searchProjectFiles(trimmed);
+        setFileResults(
+          backendFiles.map((f) => ({
+            type: "file" as const,
+            id: f.path,
+            name: f.name,
+            path: f.path,
+            meta: `${f.projectName} / ${f.category}`,
+            size: f.size,
+            isDirectory: f.isDirectory,
+          }))
+        );
+      } catch {
+        setFileResults([]);
+      }
+    }, 200);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [query]);
+
+  // 合并：项目 → 文件 → 收件箱
+  const results = useMemo(() => {
+    const merged = [...localResults, ...fileResults];
+    return merged.slice(0, 20);
+  }, [localResults, fileResults]);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, []);
 
   // 重置状态
   useEffect(() => {
@@ -172,10 +176,14 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
   // 键盘导航
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (results.length === 0) {
+        if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        return;
+      }
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
-          setSelectedIndex((prev) => Math.min(prev + 1, Math.min(results.length, 6) - 1));
+          setSelectedIndex((prev) => Math.min(prev + 1, results.length - 1));
           break;
         case "ArrowUp":
           e.preventDefault();
@@ -205,8 +213,13 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
         onClose();
       }
     } else if (result.type === "file") {
-      // 打开文件
-      window.open(`file://${result.path}`);
+      if (result.isDirectory) {
+        // 目录：打开父级分类文件夹
+        const parent = result.path.substring(0, result.path.lastIndexOf("\\") !== -1 ? result.path.lastIndexOf("\\") : result.path.lastIndexOf("/"));
+        api.openFolder(parent);
+      } else {
+        api.openFile(result.path);
+      }
       onClose();
     }
     // inbox 类型暂不处理
@@ -247,44 +260,39 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
             ) : (
               <>
                 <div className="spotlight-list">
-                  {visibleResults.map((result, index) => (
+                  {results.map((result, index) => (
                     <button
                       key={result.id}
                       className={`spotlight-item ${index === selectedIndex ? "selected" : ""}`}
                       onClick={() => handleSelect(result)}
                       onMouseEnter={() => setSelectedIndex(index)}
                     >
-                      <div className="spotlight-item-icon">
-                        {result.type === "project" && <Folder size={18} />}
-                        {result.type === "file" && <span className="file-emoji">{getFileIcon(result.name)}</span>}
-                        {result.type === "inbox" && <Inbox size={18} />}
-                      </div>
-                      <div className="spotlight-item-content">
-                        <div className="spotlight-item-name">
+                      <span className="spotlight-item-type">
+                        {result.type === "project" && <Folder size={16} />}
+                        {result.type === "file" && result.isDirectory && <Folder size={16} />}
+                        {result.type === "file" && !result.isDirectory && <FileText size={16} />}
+                        {result.type === "inbox" && <Inbox size={16} />}
+                      </span>
+                      <div className="spotlight-item-main">
+                        <span className="spotlight-item-name">
                           <HighlightText text={result.name} query={query} />
-                        </div>
-                        <div className="spotlight-item-path">
-                          {result.meta || result.path}
-                        </div>
+                        </span>
+                        <span className="spotlight-item-meta">
+                          <HighlightText text={result.meta || result.path} query={query} />
+                        </span>
                       </div>
-                      {result.size && (
-                        <div className="spotlight-item-size">{formatSize(result.size)}</div>
+                      {result.size != null && (
+                        <span className="spotlight-item-size">{formatSize(result.size)}</span>
                       )}
                     </button>
                   ))}
                 </div>
-                {results.length > 6 && (
-                  <div className="spotlight-footer">
-                    <span className="spotlight-hint">
-                      <kbd>↑</kbd><kbd>↓</kbd> 导航 &nbsp;
-                      <kbd>Enter</kbd> 打开 &nbsp;
-                      <kbd>Esc</kbd> 关闭
-                    </span>
-                    <span className="spotlight-count">
-                      共 {results.length} 个结果，滚动查看更多
-                    </span>
-                  </div>
-                )}
+                <div className="spotlight-footer">
+                  <span>{results.length} 个结果</span>
+                  <span className="spotlight-footer-hint">
+                    <kbd>↑↓</kbd> 导航 <kbd>Enter</kbd> 打开 <kbd>Esc</kbd> 关闭
+                  </span>
+                </div>
               </>
             )}
           </div>
@@ -293,22 +301,7 @@ export function SpotlightSearch({ isOpen, onClose, data, onOpenProject }: Spotli
         {/* 快捷键提示（无搜索时） */}
         {!query.trim() && (
           <div className="spotlight-hints">
-            <div className="spotlight-hint-row">
-              <kbd>Ctrl</kbd>+<kbd>K</kbd>
-              <span>打开搜索</span>
-            </div>
-            <div className="spotlight-hint-row">
-              <kbd>↑</kbd><kbd>↓</kbd>
-              <span>选择</span>
-            </div>
-            <div className="spotlight-hint-row">
-              <kbd>Enter</kbd>
-              <span>打开</span>
-            </div>
-            <div className="spotlight-hint-row">
-              <kbd>Esc</kbd>
-              <span>关闭</span>
-            </div>
+            <span className="spotlight-hint-label">输入关键词搜索项目、文件、别名和标签</span>
           </div>
         )}
       </div>
