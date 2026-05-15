@@ -1610,7 +1610,11 @@ small,
   color: var(--accent-strong);
 }
 
-.context-menu-item.danger:hover {
+.context-menu-item.danger-text {
+  color: #ef4444;
+}
+
+.context-menu-item.danger-text:hover {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
 }

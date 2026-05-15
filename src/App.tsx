@@ -374,6 +374,7 @@ export function App() {
   const [wsCreating, setWsCreating] = useState(false);
   const [wsNewName, setWsNewName] = useState("");
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
+  const [navigatedCategory, setNavigatedCategory] = useState<{ category: string; ts: number } | null>(null);
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
   const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(
@@ -465,6 +466,7 @@ export function App() {
 
   // 業務方法
   const openProject = useCallback(async (project: Project) => {
+    setNavigatedCategory(null);
     setActiveProjectId(project.id);
     setView("projects");
     setData(await api.markProjectOpened(project.id));
@@ -892,6 +894,7 @@ export function App() {
             onCopyFile={setCopiedFile}
             onPreviewFile={handlePreviewFile}
             fileChangeEpoch={fileChangeEpoch}
+            initialCategory={navigatedCategory}
           />
         )}
 
@@ -1028,6 +1031,15 @@ export function App() {
           setView("inbox");
           setSelectedInbox([itemId]);
         }}
+        onNavigateToFolder={(projectName, category) => {
+          const project = data.projects.find((p) => p.name === projectName);
+          if (project) {
+            setNavigatedCategory(category ? { category, ts: Date.now() } : null);
+            setActiveProjectId(project.id);
+            setView("projects");
+          }
+        }}
+        onPreviewFile={handlePreviewFile}
       />
     </div>
   );

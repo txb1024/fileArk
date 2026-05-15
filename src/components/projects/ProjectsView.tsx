@@ -65,6 +65,7 @@ interface ProjectsViewProps {
   onCopyFile: (file: { path: string; name: string } | null) => void;
   onPreviewFile: (path: string, name: string) => void;
   fileChangeEpoch: number;
+  initialCategory?: { category: string; ts: number } | null;
 }
 
 export function ProjectsView({
@@ -77,9 +78,10 @@ export function ProjectsView({
   onCopyFile,
   onPreviewFile,
   fileChangeEpoch,
+  initialCategory,
 }: ProjectsViewProps) {
   const [selectedCategory, setSelectedCategory] = useState(
-    data.settings.categories[0] || ""
+    initialCategory?.category || data.settings.categories[0] || ""
   );
   const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
   const [fileFilter, setFileFilter] = useState("");
@@ -129,6 +131,8 @@ export function ProjectsView({
     return () => { cancelled = true; };
   }, [activeProject, selectedCategory]);
 
+  // 项目切换时：重置分类选择（用 categoriesKey 避免引用变化导致误触发）
+  const categoriesKey = data.settings.categories.join(",");
   useEffect(() => {
     setSelectedCategory(data.settings.categories[0] || "");
     setFileFilter("");
@@ -139,7 +143,25 @@ export function ProjectsView({
         .then(setCategoryCounts)
         .catch(() => setCategoryCounts({}));
     }
-  }, [activeProject.id, data.settings.categories, fileChangeEpoch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject.id, categoriesKey]);
+
+  // 搜索导航：initialCategory 变化时切换到指定分类（ts 确保每次搜索都触发）
+  useEffect(() => {
+    if (initialCategory?.category) {
+      setSelectedCategory(initialCategory.category);
+    }
+  }, [initialCategory]);
+
+  // 文件变更时：仅刷新分类计数，不重置选中分类
+  useEffect(() => {
+    if (activeProject?.path) {
+      api
+        .getCategoryCounts(activeProject.path, data.settings.categories)
+        .then(setCategoryCounts)
+        .catch(() => setCategoryCounts({}));
+    }
+  }, [activeProject?.path, categoriesKey, fileChangeEpoch]);
 
   useEffect(() => {
     storage.set("archive.fileScale", fileScale);
@@ -361,7 +383,7 @@ export function ProjectsView({
     if (file.isDirectory) {
       toggleFolderExpanded(file.path);
     } else {
-      api.openFile(file.path);
+      onPreviewFile(file.path, file.name);
     }
   }
 
@@ -448,31 +470,10 @@ export function ProjectsView({
           {/* 文件面板 */}
           <section className="panel" onKeyDown={handleFilePanelKeyDown} tabIndex={-1}>
             <div className="panel-title">
-              <FolderOpen size={18} />
-              <div>
-                <div className="panel-project-name">{activeProject.name}</div>
-                <h2>{selectedCategory || t.name}</h2>
-              </div>
+              <h2>{selectedCategory || t.name}</h2>
             </div>
 
-            {/* 批量选择操作栏 */}
-            {selectedFiles.size > 0 && (
-              <div className="selection-bar">
-                <span className="selection-bar-count">已选择 {selectedFiles.size} 个文件</span>
-                <button className="icon-button" onClick={clearSelection} title="取消选择">
-                  <XCircle size={16} />
-                </button>
-                <div className="selection-bar-spacer" />
-                <button className="secondary compact-button" onClick={handleCopySelected} disabled={selectedFiles.size !== 1}>
-                  <Copy size={14} />
-                  复制
-                </button>
-                <button className="secondary compact-button danger-hover" onClick={() => setBatchDeleteOpen(true)}>
-                  <Trash2 size={14} />
-                  删除
-                </button>
-              </div>
-            )}
+            {/* 批量选择操作栏（隐藏，选中操作通过右键菜单进行） */}
 
             {/* 工具栏 */}
             <div className="file-toolbar">
@@ -759,7 +760,11 @@ export function ProjectsView({
             <button
               className="context-menu-item"
               onClick={() => {
-                api.openFile(contextMenu.file.path);
+                if (contextMenu.file.isDirectory) {
+                  api.openFolder(contextMenu.file.path);
+                } else {
+                  api.openFile(contextMenu.file.path);
+                }
                 setContextMenu(null);
               }}
             >
@@ -797,7 +802,7 @@ export function ProjectsView({
             </button>
             {!contextMenu.file.isDirectory && (
               <button
-                className="context-menu-item danger"
+                className="context-menu-item danger-text"
                 onClick={() => {
                   setPendingDeleteFile(contextMenu.file);
                   setDeleteConfirmOpen(true);
@@ -807,6 +812,21 @@ export function ProjectsView({
                 <Trash2 size={14} />
                 {t.deleteFile}
               </button>
+            )}
+            {selectedFiles.size > 1 && (
+              <>
+                <div className="context-menu-divider" />
+                <button
+                  className="context-menu-item danger-text"
+                  onClick={() => {
+                    setBatchDeleteOpen(true);
+                    setContextMenu(null);
+                  }}
+                >
+                  <Trash2 size={14} />
+                  删除选中的 {selectedFiles.size} 个文件
+                </button>
+              </>
             )}
           </div>
         </>

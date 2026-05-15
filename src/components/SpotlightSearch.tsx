@@ -11,6 +11,8 @@ interface SearchResult {
   meta?: string;
   size?: number;
   isDirectory?: boolean;
+  projectName?: string;
+  category?: string;
 }
 
 interface SpotlightSearchProps {
@@ -19,6 +21,8 @@ interface SpotlightSearchProps {
   data: AppData;
   onOpenProject: (project: Project) => void;
   onSelectInbox?: (itemId: string) => void;
+  onNavigateToFolder?: (projectName: string, category: string) => void;
+  onPreviewFile?: (path: string, name: string) => void;
 }
 
 // 高亮匹配文本
@@ -70,6 +74,8 @@ export function SpotlightSearch({
   data,
   onOpenProject,
   onSelectInbox,
+  onNavigateToFolder,
+  onPreviewFile,
 }: SpotlightSearchProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -140,6 +146,8 @@ export function SpotlightSearch({
             meta: `${f.projectName} / ${f.category}`,
             size: f.size,
             isDirectory: f.isDirectory,
+            projectName: f.projectName,
+            category: f.category,
           }))
         );
       } catch {
@@ -168,6 +176,7 @@ export function SpotlightSearch({
     if (isOpen) {
       setQuery("");
       setSelectedIndex(0);
+      setIsClosing(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [isOpen]);
@@ -252,11 +261,10 @@ export function SpotlightSearch({
       }
     } else if (result.type === "file") {
       if (result.isDirectory) {
-        const sep = result.path.includes("\\") ? "\\" : "/";
-        const parent = result.path.substring(0, result.path.lastIndexOf(sep));
-        pendingActionRef.current = () => api.openFolder(parent);
+        pendingActionRef.current = () =>
+          onNavigateToFolder?.(result.projectName || "", result.category || "");
       } else {
-        pendingActionRef.current = () => api.openFile(result.path);
+        pendingActionRef.current = () => onPreviewFile?.(result.path, result.name);
       }
       if (!isClosing) setIsClosing(true);
     } else if (result.type === "inbox") {
