@@ -153,6 +153,41 @@ pub struct SearchFileResult {
     pub is_directory: bool,
 }
 
+// ── 便签 ────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteMeta {
+    pub id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub pinned: bool,
+    pub category: String,
+    pub snippet: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct NotesIndex {
+    pub notes: Vec<NoteMeta>,
+    pub trash: Vec<NoteMeta>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CreateNoteInput {
+    pub title: Option<String>,
+    pub category: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UpdateNoteMetaInput {
+    pub title: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub pinned: Option<bool>,
+    pub category: Option<String>,
+}
+
 // ── 输入 DTO ────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug)]

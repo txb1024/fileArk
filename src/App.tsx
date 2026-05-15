@@ -28,12 +28,13 @@ import {
   Copy,
   LayoutList,
   LayoutGrid,
+  StickyNote,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type { AppData, CategoryFile, Project, TrashItem, WorkspaceRegistry } from "./types";
-import { HomeView, TrashView, InboxView, SettingsView } from "./views";
+import { HomeView, TrashView, InboxView, SettingsView, NotesView } from "./views";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { SpotlightSearch } from "./components/SpotlightSearch";
 import {
@@ -50,7 +51,7 @@ import { storage } from "./utils";
 
 // ── 類型定義 ──────────────────────────────────────────────
 
-type View = "home" | "projects" | "inbox" | "search" | "settings" | "trash" | "category-edit";
+type View = "home" | "projects" | "inbox" | "search" | "settings" | "trash" | "category-edit" | "notes";
 type Language = "zh" | "en";
 type ThemeMode = "light" | "dark";
 type AccentColor = "blue" | "teal" | "violet" | "orange";
@@ -668,6 +669,7 @@ export function App() {
             { id: "home" as const, label: t.home, icon: Home },
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
             { id: "inbox" as const, label: t.inbox, icon: Inbox },
+            { id: "notes" as const, label: language === "zh" ? "便签" : "Notes", icon: StickyNote },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
             { id: "settings" as const, label: t.settings, icon: Settings },
           ].map((item) => (
@@ -944,6 +946,8 @@ export function App() {
             onEmptyTrash={() => setTrashConfirmOpen(true)}
           />
         )}
+
+        {view === "notes" && <NotesView language={language} />}
       </main>
 
       {/* 彈窗 */}

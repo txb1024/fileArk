@@ -16,7 +16,13 @@
         "resizable": true,
         "center": true
       }
-    ]
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
   },
   "bundle": {
     "active": true,

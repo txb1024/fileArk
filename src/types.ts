@@ -112,6 +112,30 @@ export type TrashItem = {
   deletedAt: string;
 };
 
+// 便签
+export type NoteMeta = {
+  id: string;
+  title: string;
+  tags: string[];
+  pinned: boolean;
+  category: string;
+  snippet: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateNoteInput = {
+  title?: string;
+  category?: string;
+};
+
+export type UpdateNoteMetaInput = {
+  title?: string;
+  tags?: string[];
+  pinned?: boolean;
+  category?: string;
+};
+
 // UI 类型
 export type Language = "zh" | "en";
 export type ThemeMode = "light" | "dark";
@@ -294,5 +318,19 @@ export type ArchiveApi = {
   searchProjectFiles: (query: string) => Promise<
     Array<{ name: string; path: string; projectName: string; category: string; size: number; isDirectory: boolean }>
   >;
+  // 便签
+  listNotes: () => Promise<NoteMeta[]>;
+  getNoteContent: (id: string) => Promise<string>;
+  createNote: (input: CreateNoteInput) => Promise<NoteMeta>;
+  saveNote: (id: string, content: string) => Promise<NoteMeta>;
+  updateNoteMeta: (id: string, input: UpdateNoteMetaInput) => Promise<void>;
+  deleteNote: (id: string) => Promise<void>;
+  searchNotes: (query: string) => Promise<NoteMeta[]>;
+  listTrashedNotes: () => Promise<NoteMeta[]>;
+  restoreNote: (id: string) => Promise<NoteMeta>;
+  permanentlyDeleteNote: (id: string) => Promise<void>;
+  emptyNotesTrash: () => Promise<void>;
+  /** 保存便签内嵌资源（图片等），返回绝对路径，前端用 convertFileSrc 转 webview URL */
+  saveNoteAsset: (data: string, ext: string) => Promise<string>;
 };
 

@@ -781,6 +781,167 @@ fn clear_inbox(app: tauri::AppHandle) -> Result<AppData, String> {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Tauri Commands - 便签
+// ═══════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn list_notes(app: tauri::AppHandle) -> Result<Vec<NoteMeta>, String> {
+    let index = read_notes_index(&app)?;
+    Ok(index.notes)
+}
+
+#[tauri::command]
+fn get_note_content(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    read_note_content(&app, &id)
+}
+
+#[tauri::command]
+fn create_note(app: tauri::AppHandle, input: CreateNoteInput) -> Result<NoteMeta, String> {
+    let mut index = read_notes_index(&app)?;
+    let id = Uuid::new_v4().to_string();
+    let ts = utils::now_rfc3339();
+
+    // 如果未提供标题，创建默认内容带标题
+    let title = input.title.unwrap_or_else(|| "未命名便签".to_string());
+    let category = input.category.unwrap_or_else(|| "临时".to_string());
+
+    let default_content = format!("# {}\n\n", title);
+    write_note_content(&app, &id, &default_content)?;
+    let snippet = generate_snippet(&default_content, 120);
+
+    let meta = NoteMeta {
+        id,
+        title,
+        tags: vec![],
+        pinned: false,
+        category,
+        snippet,
+        created_at: ts.clone(),
+        updated_at: ts,
+    };
+
+    index.notes.insert(0, meta.clone());
+    write_notes_index(&app, &index)?;
+    Ok(meta)
+}
+
+#[tauri::command]
+fn save_note(app: tauri::AppHandle, id: String, content: String) -> Result<NoteMeta, String> {
+    write_note_content(&app, &id, &content)?;
+
+    // 更新索引中的标题、摘要和更新时间
+    let mut index = read_notes_index(&app)?;
+    let ts = utils::now_rfc3339();
+    let snippet = generate_snippet(&content, 120);
+    let mut updated_meta: Option<NoteMeta> = None;
+    for note in &mut index.notes {
+        if note.id == id {
+            if let Some(new_title) = extract_title_from_content(&content) {
+                note.title = new_title;
+            }
+            note.snippet = snippet;
+            note.updated_at = ts;
+            updated_meta = Some(note.clone());
+            break;
+        }
+    }
+    write_notes_index(&app, &index)?;
+    updated_meta.ok_or_else(|| "Note not found".to_string())
+}
+
+#[tauri::command]
+fn update_note_meta(app: tauri::AppHandle, id: String, input: UpdateNoteMetaInput) -> Result<(), String> {
+    let mut index = read_notes_index(&app)?;
+    let ts = utils::now_rfc3339();
+    for note in &mut index.notes {
+        if note.id == id {
+            if let Some(title) = input.title {
+                note.title = title;
+            }
+            if let Some(tags) = input.tags {
+                note.tags = tags;
+            }
+            if let Some(pinned) = input.pinned {
+                note.pinned = pinned;
+            }
+            if let Some(category) = input.category {
+                note.category = category;
+            }
+            note.updated_at = ts;
+            break;
+        }
+    }
+    write_notes_index(&app, &index)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_note(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    trash_note_entry(&app, &id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_trashed_notes(app: tauri::AppHandle) -> Result<Vec<NoteMeta>, String> {
+    let index = read_notes_index(&app)?;
+    Ok(index.trash)
+}
+
+#[tauri::command]
+fn restore_note(app: tauri::AppHandle, id: String) -> Result<NoteMeta, String> {
+    restore_note_entry(&app, &id)
+}
+
+#[tauri::command]
+fn permanently_delete_note(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    permanently_delete_note_store(&app, &id)
+}
+
+#[tauri::command]
+fn empty_notes_trash(app: tauri::AppHandle) -> Result<(), String> {
+    empty_notes_trash_store(&app)
+}
+
+/// 保存便签内嵌资源（图片等），返回绝对路径
+/// 前端拿到绝对路径后用 convertFileSrc 转 webview URL 插入 markdown
+#[tauri::command]
+fn save_note_asset(_app: tauri::AppHandle, data: String, ext: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| format!("base64 decode failed: {}", e))?;
+    let path = save_note_asset_file(&_app, &bytes, &ext)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, String> {
+    let index = read_notes_index(&app)?;
+    let lower = query.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(index.notes);
+    }
+    let mut results: Vec<NoteMeta> = vec![];
+    for note in &index.notes {
+        let meta_match = note.title.to_lowercase().contains(&lower)
+            || note.tags.iter().any(|t| t.to_lowercase().contains(&lower))
+            || note.category.to_lowercase().contains(&lower)
+            || note.snippet.to_lowercase().contains(&lower);
+        if meta_match {
+            results.push(note.clone());
+            continue;
+        }
+        // 搜索笔记内容
+        if let Ok(content) = read_note_content(&app, &note.id) {
+            if content.to_lowercase().contains(&lower) {
+                results.push(note.clone());
+            }
+        }
+    }
+    Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Tauri Commands - 系统
 // ═══════════════════════════════════════════════════════════════
 
@@ -1196,6 +1357,18 @@ fn main() {
             start_watching,
             stop_watching,
             search_project_files,
+            list_notes,
+            get_note_content,
+            create_note,
+            save_note,
+            update_note_meta,
+            delete_note,
+            search_notes,
+            list_trashed_notes,
+            restore_note,
+            permanently_delete_note,
+            empty_notes_trash,
+            save_note_asset,
         ])
         .run(tauri::generate_context!())
         .expect("tauri 启动失败");

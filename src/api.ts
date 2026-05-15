@@ -13,6 +13,9 @@ import type {
   CategoryFile,
   WorkspaceRegistry,
   TrashItem,
+  NoteMeta,
+  CreateNoteInput,
+  UpdateNoteMetaInput,
 } from "./types";
 
 /// 预览文件信息
@@ -81,4 +84,17 @@ export const api: ArchiveApi = {
       "search_project_files",
       { query }
     ),
+  // 便签
+  listNotes: () => invoke<NoteMeta[]>("list_notes"),
+  getNoteContent: (id: string) => invoke<string>("get_note_content", { id }),
+  createNote: (input: CreateNoteInput) => invoke<NoteMeta>("create_note", { input }),
+  saveNote: (id: string, content: string) => invoke<NoteMeta>("save_note", { id, content }),
+  updateNoteMeta: (id: string, input: UpdateNoteMetaInput) => invoke<void>("update_note_meta", { id, input }),
+  deleteNote: (id: string) => invoke<void>("delete_note", { id }),
+  searchNotes: (query: string) => invoke<NoteMeta[]>("search_notes", { query }),
+  listTrashedNotes: () => invoke<NoteMeta[]>("list_trashed_notes"),
+  restoreNote: (id: string) => invoke<NoteMeta>("restore_note", { id }),
+  permanentlyDeleteNote: (id: string) => invoke<void>("permanently_delete_note", { id }),
+  emptyNotesTrash: () => invoke<void>("empty_notes_trash"),
+  saveNoteAsset: (data, ext) => invoke<string>("save_note_asset", { data, ext }),
 };

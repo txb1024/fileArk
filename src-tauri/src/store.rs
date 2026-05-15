@@ -1,6 +1,6 @@
 //! 数据持久化层
 
-use crate::models::{AppData, Project, TrashData, WorkspaceMeta, WorkspaceRegistry};
+use crate::models::{AppData, NoteMeta, NotesIndex, Project, TrashData, WorkspaceMeta, WorkspaceRegistry};
 use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, Manager};
@@ -168,6 +168,154 @@ pub fn write_trash(app: &AppHandle, trash: &TrashData) -> Result<(), String> {
     let path = trash_data_path(app);
     let json = serde_json::to_string_pretty(trash).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ── Notes ─────────────────────────────────────────────────
+
+fn notes_dir(app: &AppHandle) -> std::path::PathBuf {
+    let dir = app_data_dir(app).join("notes");
+    if !dir.exists() {
+        let _ = fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+pub fn notes_assets_dir(app: &AppHandle) -> std::path::PathBuf {
+    let dir = notes_dir(app).join("assets");
+    if !dir.exists() {
+        let _ = fs::create_dir_all(&dir);
+    }
+    dir
+}
+
+pub fn save_note_asset_file(app: &AppHandle, data: &[u8], ext: &str) -> Result<std::path::PathBuf, String> {
+    let dir = notes_assets_dir(app);
+    let safe_ext = ext.trim_start_matches('.').to_lowercase();
+    let safe_ext: String = safe_ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let safe_ext = if safe_ext.is_empty() { "bin".to_string() } else { safe_ext };
+    let id = Uuid::new_v4().to_string();
+    let filename = format!("{}.{}", id, safe_ext);
+    let path = dir.join(&filename);
+    fs::write(&path, data).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn notes_index_path(app: &AppHandle) -> std::path::PathBuf {
+    notes_dir(app).join("index.json")
+}
+
+pub fn read_notes_index(app: &AppHandle) -> Result<NotesIndex, String> {
+    let path = notes_index_path(app);
+    if !path.exists() {
+        return Ok(NotesIndex::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+pub fn write_notes_index(app: &AppHandle, index: &NotesIndex) -> Result<(), String> {
+    let path = notes_index_path(app);
+    let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+pub fn read_note_content(app: &AppHandle, id: &str) -> Result<String, String> {
+    let path = notes_dir(app).join(format!("{}.md", id));
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+pub fn write_note_content(app: &AppHandle, id: &str, content: &str) -> Result<(), String> {
+    let path = notes_dir(app).join(format!("{}.md", id));
+    fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+pub fn delete_note_file(app: &AppHandle, id: &str) -> Result<(), String> {
+    let path = notes_dir(app).join(format!("{}.md", id));
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 将笔记移入回收站（软删除）
+pub fn trash_note_entry(app: &AppHandle, id: &str) -> Result<NoteMeta, String> {
+    let mut index = read_notes_index(app)?;
+    let pos = index.notes.iter().position(|n| n.id == id)
+        .ok_or_else(|| "Note not found".to_string())?;
+    let meta = index.notes.remove(pos);
+    index.trash.insert(0, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+/// 从回收站恢复笔记
+pub fn restore_note_entry(app: &AppHandle, id: &str) -> Result<NoteMeta, String> {
+    let mut index = read_notes_index(app)?;
+    let pos = index.trash.iter().position(|n| n.id == id)
+        .ok_or_else(|| "Note not found in trash".to_string())?;
+    let meta = index.trash.remove(pos);
+    index.notes.insert(0, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+/// 永久删除回收站中的笔记
+pub fn permanently_delete_note_store(app: &AppHandle, id: &str) -> Result<(), String> {
+    let mut index = read_notes_index(app)?;
+    index.trash.retain(|n| n.id != id);
+    write_notes_index(app, &index)?;
+    delete_note_file(app, id)
+}
+
+/// 清空回收站
+pub fn empty_notes_trash_store(app: &AppHandle) -> Result<(), String> {
+    let mut index = read_notes_index(app)?;
+    for note in &index.trash {
+        let _ = delete_note_file(app, &note.id);
+    }
+    index.trash.clear();
+    write_notes_index(app, &index)
+}
+
+/// 在 Markdown 内容的第一行提取 h1 标题（只匹配单个 # 开头）
+pub fn extract_title_from_content(content: &str) -> Option<String> {
+    content
+        .lines()
+        .find(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("# ") || trimmed == "#"
+        })
+        .map(|line| line.trim().trim_start_matches('#').trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// 从 Markdown 内容生成摘要（去掉标题行，取前 120 字）
+pub fn generate_snippet(content: &str, max_len: usize) -> String {
+    let body: String = content
+        .lines()
+        .filter(|line| !line.trim().starts_with('#'))
+        .collect::<Vec<&str>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    if body.len() <= max_len {
+        body
+    } else {
+        let end = body
+            .char_indices()
+            .nth(max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(body.len());
+        format!("{}…", &body[..end])
+    }
 }
 
 // ── 推断 ────────────────────────────────────────────────────
