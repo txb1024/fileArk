@@ -597,7 +597,7 @@ export function App() {
       const baseInfo = { ext: info.ext, size: info.size, is_image: info.is_image, previewType };
 
       // 这些类型不需要读内容，由 PreviewModal 通过 asset 协议直接渲染
-      if (["pdf", "video", "audio"].includes(previewType)) {
+      if (["pdf", "video", "audio", "word_legacy"].includes(previewType)) {
         setPreviewFile({ path, name, loading: false, info: baseInfo });
         return;
       }
@@ -612,8 +612,14 @@ export function App() {
         });
         return;
       }
-      // Excel / Word / PPTX 需要读取二进制
-      if (previewType === "excel" || previewType === "word" || previewType === "pptx") {
+      // 需要二进制 base64 的类型（Office / 电子书 / 3D / 字体 / 邮件 / 字幕 / 地理 / RTF / IPYNB / 压缩包）
+      const binaryTypes = [
+        "excel", "word", "pptx",
+        "ipynb", "epub", "archive",
+        "subtitle", "email", "model3d",
+        "font", "geo", "rtf",
+      ];
+      if (binaryTypes.includes(previewType)) {
         const binaryBase64 = await api.readFileBinary(path);
         setPreviewFile({ path, name, loading: false, info: baseInfo, content: binaryBase64 });
         return;

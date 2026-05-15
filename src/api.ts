@@ -14,7 +14,10 @@ import type {
   WorkspaceRegistry,
   TrashItem,
   NoteMeta,
+  NoteTreeNode,
+  TrashedNote,
   CreateNoteInput,
+  CreateFolderInput,
   UpdateNoteMetaInput,
 } from "./types";
 
@@ -85,16 +88,28 @@ export const api: ArchiveApi = {
       { query }
     ),
   // 便签
-  listNotes: () => invoke<NoteMeta[]>("list_notes"),
+  listNotesTree: () => invoke<NoteTreeNode[]>("list_notes_tree"),
   getNoteContent: (id: string) => invoke<string>("get_note_content", { id }),
   createNote: (input: CreateNoteInput) => invoke<NoteMeta>("create_note", { input }),
+  createFolder: (input: CreateFolderInput) => invoke<NoteTreeNode>("create_folder", { input }),
   saveNote: (id: string, content: string) => invoke<NoteMeta>("save_note", { id, content }),
-  updateNoteMeta: (id: string, input: UpdateNoteMetaInput) => invoke<void>("update_note_meta", { id, input }),
+  updateNoteMeta: (id: string, input: UpdateNoteMetaInput) =>
+    invoke<void>("update_note_meta", { id, input }),
+  renameNote: (id: string, newName: string) =>
+    invoke<NoteMeta>("rename_note", { id, newName }),
+  renameFolder: (path: string, newName: string) =>
+    invoke<string>("rename_folder", { path, newName }),
+  moveNote: (id: string, newParent: string) =>
+    invoke<NoteMeta>("move_note", { id, newParent }),
+  moveFolder: (path: string, newParent: string) =>
+    invoke<string>("move_folder", { path, newParent }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
+  deleteFolder: (path: string) => invoke<void>("delete_folder", { path }),
   searchNotes: (query: string) => invoke<NoteMeta[]>("search_notes", { query }),
-  listTrashedNotes: () => invoke<NoteMeta[]>("list_trashed_notes"),
-  restoreNote: (id: string) => invoke<NoteMeta>("restore_note", { id }),
-  permanentlyDeleteNote: (id: string) => invoke<void>("permanently_delete_note", { id }),
+  listTrashedNotes: () => invoke<TrashedNote[]>("list_trashed_notes"),
+  restoreNote: (trashId: string) => invoke<NoteMeta>("restore_note", { trashId }),
+  permanentlyDeleteNote: (trashId: string) =>
+    invoke<void>("permanently_delete_note", { trashId }),
   emptyNotesTrash: () => invoke<void>("empty_notes_trash"),
   saveNoteAsset: (data, ext) => invoke<string>("save_note_asset", { data, ext }),
 };

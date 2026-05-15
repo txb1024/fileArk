@@ -96,13 +96,40 @@ pub const PPTX_EXTENSIONS: &[&str] = &["pptx"];
 /// HTML 文件扩展名
 pub const HTML_EXTENSIONS: &[&str] = &["html", "htm"];
 
+/// Jupyter Notebook 扩展名
+pub const IPYNB_EXTENSIONS: &[&str] = &["ipynb"];
+
+/// EPUB 电子书扩展名
+pub const EPUB_EXTENSIONS: &[&str] = &["epub"];
+
+/// 压缩归档扩展名（用于内容列表预览，不解压）
+pub const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "jar", "apk", "war", "ipa", "xpi"];
+
+/// 字幕扩展名
+pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+
+/// 邮件扩展名
+pub const EMAIL_EXTENSIONS: &[&str] = &["eml"];
+
+/// 3D 模型扩展名
+pub const MODEL3D_EXTENSIONS: &[&str] = &["stl", "obj", "gltf", "glb"];
+
+/// 字体扩展名
+pub const FONT_EXTENSIONS: &[&str] = &["ttf", "otf", "woff", "woff2"];
+
+/// 地理数据扩展名
+pub const GEO_EXTENSIONS: &[&str] = &["geojson", "kml"];
+
+/// RTF 富文本扩展名
+pub const RTF_EXTENSIONS: &[&str] = &["rtf"];
+
 /// 不可预览的文件扩展名
 pub const UNSUPPORTED_EXTENSIONS: &[&str] = &[
     "exe", "msi", "dll", "sys",    // 可执行文件
-    "zip", "rar", "7z", "tar", "gz", "bz2", "xz",  // 压缩包
+    "rar", "7z", "tar", "gz", "bz2", "xz",  // 其他压缩包（zip/jar/apk 走 archive 类型）
     "dmg", "iso", "img",           // 镜像
     "bin", "dat", "db", "sqlite",  // 二进制/数据
-    "doc",                         // 老 Word 二进制格式（mammoth 不支持）
+    "doc",                         // 老 Word 二进制格式（mammoth 不支持，但前端会给友好提示）
 ];
 
 /// 递归复制目录

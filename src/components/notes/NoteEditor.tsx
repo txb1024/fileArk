@@ -1,15 +1,22 @@
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useRef } from "react";
 import Vditor from "vditor";
 import "vditor/dist/index.css";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api } from "../../api";
 
 interface NoteEditorProps {
+  /** 当前便签 id，用作切换内容的"信号源"——内容回填只在 noteId 变化时发生 */
+  noteId: string;
+  /** 当前便签的内容（已由父组件读取完成） */
   content: string;
   onContentChange: (markdown: string) => void;
+  /** 立即上报每次编辑（不 debounce）— 父组件用 ref 暂存，切换便签前 flush */
+  onPendingChange?: (markdown: string) => void;
   language: "zh" | "en";
   /** 是否显示大纲面板 */
   showOutline?: boolean;
+  /** 工具栏固定（保留 prop 以兼容外层切换；当前实现总是常驻顶部） */
+  toolbarPinned?: boolean;
 }
 
 const AUTOSAVE_DELAY = 600;
@@ -29,61 +36,67 @@ function readFileAsBase64(file: File): Promise<string> {
 }
 
 /**
- * Typora 级别的 Markdown 编辑器，基于 Vditor。
+ * Markdown 编辑器（基于 Vditor）。
  *
- * 核心体验：
- * - 默认 WYSIWYG（所见即所得）模式
- * - Cmd/Ctrl + / 切换源码模式（SV）
- * - 内置大纲导航（outline）
- * - 打字机模式（光标始终居中）
- * - 中文工具栏 & 提示
- * - 深色主题联动
+ * 切换便签的卡顿对策：
+ * - vditor 实例只创建一次（[] 依赖），切换便签走 setValue 而非重建实例
+ * - 仅当 noteId 变化时才调用 setValue（避免父组件 re-render 误触发）
+ * - 内容相同时跳过 setValue
+ * - setValue 之前给容器加 .editor-busy class，让 CSS 渲染一个 skeleton
+ *   覆盖编辑区，setValue 同步阻塞主线程时用户看到的是 loading 而非旧内容
+ * - setValue 推到 rAF 之后执行，让 React commit + 浏览器 paint 先发生
+ * - 移除 mousemove 工具栏 hover（永久顶部工具栏，去掉 60Hz 监听器）
  */
-export function NoteEditor({
+function NoteEditorBase({
+  noteId,
   content,
   onContentChange,
+  onPendingChange,
   language,
   showOutline = true,
 }: NoteEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const vditorRef = useRef<Vditor | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSavedContent = useRef(content);
+  const lastSyncedContent = useRef(content);
   const onContentChangeRef = useRef(onContentChange);
+  const onPendingChangeRef = useRef(onPendingChange);
   const isSettingValue = useRef(false);
-  // Vditor 异步初始化，after 回调触发前不能调用 setValue，否则内容丢失
   const isReady = useRef(false);
-  const pendingContent = useRef<string | null>(null);
+  // 当前已渲染到编辑器的 noteId；用于判断 prop 切换是否真的换了便签
+  const renderedNoteId = useRef<string | null>(null);
+  // 异步初始化期间，最新的 (noteId, content) 暂存这里，after 回调消费
+  const pendingPayload = useRef<{ noteId: string; content: string } | null>(null);
+  // 切换便签时正在排队的 setValue rAF id
+  const pendingApplyHandle = useRef<number | null>(null);
 
   // 保持回调引用最新
   useEffect(() => {
     onContentChangeRef.current = onContentChange;
-  }, [onContentChange]);
+    onPendingChangeRef.current = onPendingChange;
+  }, [onContentChange, onPendingChange]);
 
-  // 初始化 Vditor
+  // 初始化 Vditor — 只跑一次
   useEffect(() => {
     if (!containerRef.current) return;
+    const container = containerRef.current;
+    container.classList.add("editor-busy");
 
-    const vditor = new Vditor(containerRef.current, {
-      // 基础配置
-      mode: "wysiwyg",
+    const vditor = new Vditor(container, {
+      // ir = instant rendering，类似 Typora 的"输入即所见"。
+      // 输入 `# 空格` 立刻成 H1、`**xx**` 立刻成粗体；与 wysiwyg 的纯富文本不同。
+      mode: "ir",
       value: content,
-      placeholder:
-        language === "zh" ? "开始写点什么…" : "Start writing…",
+      placeholder: language === "zh" ? "开始写点什么…" : "Start writing…",
       lang: language === "zh" ? "zh_CN" : "en_US",
       icon: "ant",
       height: "100%",
       minHeight: 400,
 
-      // 打字机模式 — 光标始终居中
-      typewriterMode: true,
+      typewriterMode: false,
 
-      // 大纲
-      outline: showOutline
-        ? { enable: true, position: "right" }
-        : { enable: false, position: "right" },
+      outline: { enable: !!showOutline, position: "right" },
 
-      // 工具栏 — 精选 Typora 风格按钮
       toolbar: [
         "headings",
         "bold",
@@ -110,24 +123,18 @@ export function NoteEditor({
         "fullscreen",
       ],
       toolbarConfig: {
-        pin: true, // 工具栏固定在顶部
+        pin: true,
       },
 
-      // 禁用 localStorage 缓存（我们用文件系统持久化）
       cache: { enable: false },
 
-      // 计数器
       counter: {
         enable: true,
         type: "markdown",
       },
 
-      // 预览配置
+      // 注意：不设置 preview.theme.path（保留 vditor 默认值，避免远程 unpkg 请求阻塞）
       preview: {
-        theme: {
-          current: "classic",
-          path: "https://unpkg.com/vditor@3.11.2/dist/css/content-theme",
-        },
         hljs: {
           style: "github",
           lineNumber: true,
@@ -137,18 +144,15 @@ export function NoteEditor({
         },
       },
 
-      // 自定义快捷键
       hint: {
         parse: false,
         emoji: {},
       },
 
-      // 图片本地化 — 拦截上传 / 拖入 / 粘贴，落到本地 notes/assets 并插入 webview URL
       upload: {
         accept: "image/*",
         multiple: true,
-        max: 20 * 1024 * 1024, // 20MB
-        // Vditor handler 类型限定为 Promise<string> 或 Promise<null>，无法用联合，故用断言
+        max: 20 * 1024 * 1024,
         handler: (async (files: File[]): Promise<string | null> => {
           try {
             for (const file of files) {
@@ -170,11 +174,12 @@ export function NoteEditor({
         }) as (files: File[]) => Promise<string>,
       },
 
-      // 输入回调 — 驱动自动保存
       input: (value: string) => {
         if (isSettingValue.current) return;
-        if (value === lastSavedContent.current) return;
-        lastSavedContent.current = value;
+        if (value === lastSyncedContent.current) return;
+        lastSyncedContent.current = value;
+
+        onPendingChangeRef.current?.(value);
 
         if (debounceTimer.current) clearTimeout(debounceTimer.current);
         debounceTimer.current = setTimeout(() => {
@@ -182,19 +187,24 @@ export function NoteEditor({
         }, AUTOSAVE_DELAY);
       },
 
-      // 编辑器渲染完成
       after: () => {
         isReady.current = true;
-        // 应用挂载到 ready 期间累积的最新内容（解决初次打开空白问题）
-        if (pendingContent.current !== null) {
+        // 应用挂载到 ready 期间，可能已经收到了一次 noteId 切换
+        const payload = pendingPayload.current;
+        if (payload) {
           isSettingValue.current = true;
-          vditor.setValue(pendingContent.current, true);
-          lastSavedContent.current = pendingContent.current;
-          pendingContent.current = null;
+          vditor.setValue(payload.content, true);
+          lastSyncedContent.current = payload.content;
+          renderedNoteId.current = payload.noteId;
           vditor.clearStack();
           isSettingValue.current = false;
+          pendingPayload.current = null;
+        } else {
+          renderedNoteId.current = noteId;
+          lastSyncedContent.current = content;
         }
-        vditor.focus();
+        container.classList.remove("editor-busy");
+        // 不主动 focus，避免 mount 时把页面滚到编辑器
       },
     });
 
@@ -202,85 +212,79 @@ export function NoteEditor({
 
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      if (pendingApplyHandle.current !== null) {
+        cancelAnimationFrame(pendingApplyHandle.current);
+        pendingApplyHandle.current = null;
+      }
       isReady.current = false;
-      pendingContent.current = null;
+      pendingPayload.current = null;
+      renderedNoteId.current = null;
       vditor.destroy();
       vditorRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // 只在挂载时初始化一次
+  }, []);
 
-  // 内容切换（用户选中不同便签时）
-  useEffect(() => {
+  // 切换便签：仅当 noteId 真变了才同步内容
+  // 用 useLayoutEffect 在 React commit 后立刻给容器加 busy class（让 skeleton 跟着同一帧出现），
+  // 实际 setValue 推到下一帧，让浏览器先 paint skeleton。
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
     const vditor = vditorRef.current;
-    if (!vditor) return;
 
-    // vditor 还在异步初始化，暂存内容由 after 回调消费
-    if (!isReady.current) {
-      pendingContent.current = content;
+    // vditor 还在异步初始化：把当前 (noteId, content) 暂存，after 回调里消费
+    if (!vditor || !isReady.current) {
+      pendingPayload.current = { noteId, content };
       return;
     }
 
-    // 避免自己触发的 input 回调
-    isSettingValue.current = true;
-    lastSavedContent.current = content;
-    vditor.setValue(content, true);
-    isSettingValue.current = false;
+    // 这个 noteId 已经渲染到编辑器里了，不刷新（保护用户的光标和未保存草稿）
+    // 父组件保证 (noteId, content) 是配对的，所以 noteId 没变就一定是同篇便签
+    if (renderedNoteId.current === noteId) return;
 
-    // 重置 undo 栈，避免 undo 回到上一个便签的内容
-    vditor.clearStack();
-  }, [content]);
+    // 立刻显示 skeleton，再下一帧执行 setValue
+    container.classList.add("editor-busy");
 
-  // 工具栏悬停浮现 — 鼠标接近顶部时显示，离开后淡出
+    if (pendingApplyHandle.current !== null) {
+      cancelAnimationFrame(pendingApplyHandle.current);
+    }
+    pendingApplyHandle.current = requestAnimationFrame(() => {
+      pendingApplyHandle.current = null;
+      isSettingValue.current = true;
+      try {
+        vditor.setValue(content, true);
+        vditor.clearStack();
+        lastSyncedContent.current = content;
+        renderedNoteId.current = noteId;
+      } finally {
+        isSettingValue.current = false;
+        // setValue 同步完成后再下一帧移除 busy（让用户看到的"loading→内容"过渡更稳）
+        requestAnimationFrame(() => {
+          container.classList.remove("editor-busy");
+        });
+      }
+    });
+  }, [noteId, content]);
+
+  // 同步 outline 显示
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const HOVER_THRESHOLD = 70;
-    let hideTimer: ReturnType<typeof setTimeout> | null = null;
+    container.classList.toggle("no-outline", !showOutline);
+  }, [showOutline]);
 
-    const handleMove = (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const offsetY = e.clientY - rect.top;
-      const inHotZone = offsetY >= 0 && offsetY < HOVER_THRESHOLD;
-
-      if (inHotZone) {
-        if (hideTimer) {
-          clearTimeout(hideTimer);
-          hideTimer = null;
-        }
-        container.classList.add("toolbar-visible");
-      } else if (!container.classList.contains("toolbar-pinned")) {
-        if (hideTimer) clearTimeout(hideTimer);
-        hideTimer = setTimeout(() => {
-          container.classList.remove("toolbar-visible");
-        }, 400);
-      }
-    };
-
-    const handleLeave = () => {
-      if (hideTimer) clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => {
-        container.classList.remove("toolbar-visible");
-      }, 200);
-    };
-
-    container.addEventListener("mousemove", handleMove);
-    container.addEventListener("mouseleave", handleLeave);
-    return () => {
-      container.removeEventListener("mousemove", handleMove);
-      container.removeEventListener("mouseleave", handleLeave);
-      if (hideTimer) clearTimeout(hideTimer);
-    };
-  }, []);
-
-  // 主题切换 — 跟随 app 的 theme-dark class
+  // 主题切换 — 跟随 .app-shell 的 theme-dark class
   useEffect(() => {
+    let lastIsDark: boolean | null = null;
     const applyTheme = () => {
       const vditor = vditorRef.current;
       if (!vditor || !isReady.current) return;
-      const isDark = document
+      const isDark = !!document
         .querySelector(".app-shell")
         ?.classList.contains("theme-dark");
+      if (isDark === lastIsDark) return;
+      lastIsDark = isDark;
       if (isDark) {
         vditor.setTheme("dark", "dark", "dracula");
       } else {
@@ -288,28 +292,35 @@ export function NoteEditor({
       }
     };
 
-    const observer = new MutationObserver(applyTheme);
-
     const appShell = document.querySelector(".app-shell");
-    if (appShell) {
-      observer.observe(appShell, {
-        attributes: true,
-        attributeFilter: ["class"],
-      });
+    if (!appShell) return;
+    const observer = new MutationObserver(applyTheme);
+    observer.observe(appShell, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
 
-      // 初次尝试，若 vditor 还未 ready 会跳过；ready 后由下面定时器再尝试
-      applyTheme();
-
-      // vditor 挂载到 ready 通常 < 200ms，轮询一次兜底
-      const timer = setTimeout(applyTheme, 300);
-      return () => {
-        clearTimeout(timer);
-        observer.disconnect();
-      };
-    }
-
-    return () => observer.disconnect();
+    applyTheme();
+    const timer = setTimeout(applyTheme, 300);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
   }, []);
 
-  return <div ref={containerRef} className="note-vditor" />;
+  return <div ref={containerRef} className="note-vditor toolbar-pinned toolbar-visible" />;
 }
+
+/**
+ * NoteEditor 用 React.memo 包装：
+ * 父组件由于 saveNote 返回的 NoteMeta、tag 编辑等触发的 re-render 不会传到这里。
+ * 仅当真正影响编辑器渲染的 prop 变化才重渲染。
+ */
+export const NoteEditor = memo(
+  NoteEditorBase,
+  (prev, next) =>
+    prev.noteId === next.noteId &&
+    prev.content === next.content &&
+    prev.language === next.language &&
+    prev.showOutline === next.showOutline
+);

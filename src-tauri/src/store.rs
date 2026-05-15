@@ -1,6 +1,6 @@
 //! 数据持久化层
 
-use crate::models::{AppData, NoteMeta, NotesIndex, Project, TrashData, WorkspaceMeta, WorkspaceRegistry};
+use crate::models::{AppData, NoteMeta, NoteTreeNode, NotesIndex, Project, TrashData, TrashedNote, WorkspaceMeta, WorkspaceRegistry};
 use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, Manager};
@@ -172,7 +172,7 @@ pub fn write_trash(app: &AppHandle, trash: &TrashData) -> Result<(), String> {
 
 // ── Notes ─────────────────────────────────────────────────
 
-fn notes_dir(app: &AppHandle) -> std::path::PathBuf {
+pub fn notes_dir(app: &AppHandle) -> std::path::PathBuf {
     let dir = app_data_dir(app).join("notes");
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
@@ -223,8 +223,158 @@ pub fn write_notes_index(app: &AppHandle, index: &NotesIndex) -> Result<(), Stri
     fs::write(&path, json).map_err(|e| e.to_string())
 }
 
+// ── 路径工具 ──────────────────────────────────────────────
+
+/// 把 std::path 路径转成 POSIX 风格相对路径（前端统一处理）
+#[allow(dead_code)]
+pub fn posix(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// 从相对 id 还原绝对路径
+pub fn abs_from_id(app: &AppHandle, id: &str) -> std::path::PathBuf {
+    notes_dir(app).join(id.replace('/', std::path::MAIN_SEPARATOR_STR))
+}
+
+/// 拼接 parent 与名字成相对路径，parent 为空时直接返回 name
+pub fn join_rel(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
+}
+
+/// 清理文件夹/文件名中的非法字符，限制长度
+pub fn sanitize_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let trimmed = cleaned.trim().trim_end_matches('.').to_string();
+    let truncated: String = trimmed.chars().take(80).collect();
+    if truncated.is_empty() { "未命名".to_string() } else { truncated }
+}
+
+/// 在 dir 下找一个不冲突的文件/文件夹名；冲突时追加 (1)(2)...
+pub fn unique_name(dir: &Path, base: &str, ext: Option<&str>) -> String {
+    let make = |n: usize| -> String {
+        let stem = if n == 0 { base.to_string() } else { format!("{} ({})", base, n) };
+        match ext {
+            Some(e) => format!("{}.{}", stem, e),
+            None => stem,
+        }
+    };
+    for n in 0..1000 {
+        let candidate = make(n);
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    make(0)
+}
+
+/// 递归扫描目录，构建 NoteTreeNode 树。跳过 assets/、隐藏文件、index.json。
+/// parent 是当前目录相对 notes_root 的 POSIX 路径（根目录传 ""）
+pub fn scan_tree(app: &AppHandle, dir: &Path, parent: &str, index: &NotesIndex) -> Vec<NoteTreeNode> {
+    let mut folders: Vec<NoteTreeNode> = vec![];
+    let mut notes: Vec<NoteTreeNode> = vec![];
+
+    let entries = match fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return vec![],
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "assets" || name == "index.json" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let rel = join_rel(parent, &name);
+            let children = scan_tree(app, &path, &rel, index);
+            folders.push(NoteTreeNode::Folder {
+                path: rel.clone(),
+                name,
+                parent: parent.to_string(),
+                children,
+            });
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let rel = join_rel(parent, &name);
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&name)
+                .to_string();
+            let meta = index.meta.get(&rel).cloned().unwrap_or_else(|| {
+                let now = crate::utils::now_rfc3339();
+                NoteMeta {
+                    id: rel.clone(),
+                    name: stem.clone(),
+                    parent: parent.to_string(),
+                    title: stem.clone(),
+                    tags: vec![],
+                    pinned: false,
+                    snippet: String::new(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                }
+            });
+            notes.push(NoteTreeNode::Note(meta));
+        }
+    }
+
+    // folder 优先，置顶笔记其次，按名称排序
+    folders.sort_by(|a, b| match (a, b) {
+        (NoteTreeNode::Folder { name: an, .. }, NoteTreeNode::Folder { name: bn, .. }) => {
+            an.to_lowercase().cmp(&bn.to_lowercase())
+        }
+        _ => std::cmp::Ordering::Equal,
+    });
+    notes.sort_by(|a, b| match (a, b) {
+        (NoteTreeNode::Note(am), NoteTreeNode::Note(bm)) => match (am.pinned, bm.pinned) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => bm.updated_at.cmp(&am.updated_at),
+        },
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    folders.into_iter().chain(notes).collect()
+}
+
+/// 启动时一次性清理：旧扁平 {uuid}.md 全删（用户已同意推倒）
+pub fn migrate_old_notes_if_needed(app: &AppHandle) -> Result<(), String> {
+    let root = notes_dir(app);
+    let entries = match fs::read_dir(&root) {
+        Ok(it) => it,
+        Err(_) => return Ok(()),
+    };
+    let mut migrated = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".md") {
+            continue;
+        }
+        let stem = name.trim_end_matches(".md");
+        // 旧扁平存储：根目录下的 UUID 命名 .md 文件
+        if Uuid::parse_str(stem).is_ok() {
+            let _ = fs::remove_file(entry.path());
+            migrated = true;
+        }
+    }
+    if migrated {
+        // 清掉旧索引格式
+        let idx = notes_index_path(app);
+        let _ = fs::remove_file(idx);
+    }
+    Ok(())
+}
+
+// ── 索引 I/O ──────────────────────────────────────────────
+
 pub fn read_note_content(app: &AppHandle, id: &str) -> Result<String, String> {
-    let path = notes_dir(app).join(format!("{}.md", id));
+    let path = abs_from_id(app, id);
     if !path.exists() {
         return Ok(String::new());
     }
@@ -232,54 +382,337 @@ pub fn read_note_content(app: &AppHandle, id: &str) -> Result<String, String> {
 }
 
 pub fn write_note_content(app: &AppHandle, id: &str, content: &str) -> Result<(), String> {
-    let path = notes_dir(app).join(format!("{}.md", id));
+    let path = abs_from_id(app, id);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
-pub fn delete_note_file(app: &AppHandle, id: &str) -> Result<(), String> {
-    let path = notes_dir(app).join(format!("{}.md", id));
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
+// ── 增删改 ────────────────────────────────────────────────
+
+pub fn create_note_entry(app: &AppHandle, parent: &str, name: Option<&str>) -> Result<NoteMeta, String> {
+    let parent = parent.trim_matches('/').to_string();
+    let parent_abs = if parent.is_empty() { notes_dir(app) } else { abs_from_id(app, &parent) };
+    if !parent_abs.exists() {
+        fs::create_dir_all(&parent_abs).map_err(|e| e.to_string())?;
     }
+    let base = name.map(sanitize_name).unwrap_or_else(|| "未命名便签".to_string());
+    let filename = unique_name(&parent_abs, &base, Some("md"));
+    let stem = filename.trim_end_matches(".md").to_string();
+    let id = join_rel(&parent, &filename);
+    let now = crate::utils::now_rfc3339();
+    let default_content = format!("# {}\n\n", stem);
+    write_note_content(app, &id, &default_content)?;
+
+    let meta = NoteMeta {
+        id: id.clone(),
+        name: stem.clone(),
+        parent,
+        title: stem,
+        tags: vec![],
+        pinned: false,
+        snippet: String::new(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let mut index = read_notes_index(app)?;
+    index.meta.insert(id, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+pub fn create_folder_entry(app: &AppHandle, parent: &str, name: &str) -> Result<NoteTreeNode, String> {
+    let parent = parent.trim_matches('/').to_string();
+    let parent_abs = if parent.is_empty() { notes_dir(app) } else { abs_from_id(app, &parent) };
+    if !parent_abs.exists() {
+        fs::create_dir_all(&parent_abs).map_err(|e| e.to_string())?;
+    }
+    let base = sanitize_name(name);
+    let folder_name = unique_name(&parent_abs, &base, None);
+    let new_abs = parent_abs.join(&folder_name);
+    fs::create_dir(&new_abs).map_err(|e| e.to_string())?;
+    let path = join_rel(&parent, &folder_name);
+    Ok(NoteTreeNode::Folder { path, name: folder_name, parent, children: vec![] })
+}
+
+pub fn save_note_entry(app: &AppHandle, id: &str, content: &str) -> Result<NoteMeta, String> {
+    write_note_content(app, id, content)?;
+    let mut index = read_notes_index(app)?;
+    let now = crate::utils::now_rfc3339();
+    let snippet = generate_snippet(content, 120);
+    let title = extract_title_from_content(content);
+    let path_obj = std::path::Path::new(id);
+    let stem = path_obj.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let parent = path_obj
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    let mut meta = index.meta.remove(id).unwrap_or(NoteMeta {
+        id: id.to_string(),
+        name: stem.clone(),
+        parent: parent.clone(),
+        title: title.clone().unwrap_or_else(|| stem.clone()),
+        tags: vec![],
+        pinned: false,
+        snippet: snippet.clone(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    });
+    meta.title = title.unwrap_or_else(|| stem.clone());
+    meta.snippet = snippet;
+    meta.name = stem;
+    meta.parent = parent;
+    meta.updated_at = now;
+    index.meta.insert(id.to_string(), meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+pub fn update_note_meta_entry(app: &AppHandle, id: &str, tags: Option<Vec<String>>, pinned: Option<bool>) -> Result<(), String> {
+    let mut index = read_notes_index(app)?;
+    let meta = index.meta.get_mut(id).ok_or_else(|| "Note not found".to_string())?;
+    if let Some(t) = tags { meta.tags = t; }
+    if let Some(p) = pinned { meta.pinned = p; }
+    meta.updated_at = crate::utils::now_rfc3339();
+    write_notes_index(app, &index)
+}
+
+pub fn rename_note_entry(app: &AppHandle, id: &str, new_name: &str) -> Result<NoteMeta, String> {
+    let old_abs = abs_from_id(app, id);
+    if !old_abs.exists() { return Err("Note not found".to_string()); }
+    let parent_abs = old_abs.parent().ok_or_else(|| "Invalid path".to_string())?;
+    let parent_rel: String = std::path::Path::new(id)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let base = sanitize_name(new_name);
+    let new_filename = unique_name(parent_abs, &base, Some("md"));
+    let new_abs = parent_abs.join(&new_filename);
+    fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
+    let new_id = join_rel(&parent_rel, &new_filename);
+    let new_stem = new_filename.trim_end_matches(".md").to_string();
+
+    let mut index = read_notes_index(app)?;
+    let mut meta = index.meta.remove(id).unwrap_or(NoteMeta {
+        id: new_id.clone(),
+        name: new_stem.clone(),
+        parent: parent_rel.clone(),
+        title: new_stem.clone(),
+        tags: vec![],
+        pinned: false,
+        snippet: String::new(),
+        created_at: crate::utils::now_rfc3339(),
+        updated_at: crate::utils::now_rfc3339(),
+    });
+    meta.id = new_id.clone();
+    meta.name = new_stem;
+    meta.parent = parent_rel;
+    meta.updated_at = crate::utils::now_rfc3339();
+    index.meta.insert(new_id, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+pub fn rename_folder_entry(app: &AppHandle, path: &str, new_name: &str) -> Result<String, String> {
+    let old_abs = abs_from_id(app, path);
+    if !old_abs.exists() || !old_abs.is_dir() { return Err("Folder not found".to_string()); }
+    let parent_abs = old_abs.parent().ok_or_else(|| "Invalid path".to_string())?;
+    let parent_rel: String = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let base = sanitize_name(new_name);
+    let new_folder = unique_name(parent_abs, &base, None);
+    let new_abs = parent_abs.join(&new_folder);
+    fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
+    let new_path = join_rel(&parent_rel, &new_folder);
+    update_index_paths_after_move(app, path, &new_path)?;
+    Ok(new_path)
+}
+
+pub fn move_note_entry(app: &AppHandle, id: &str, new_parent: &str) -> Result<NoteMeta, String> {
+    let old_abs = abs_from_id(app, id);
+    if !old_abs.exists() { return Err("Note not found".to_string()); }
+    let new_parent = new_parent.trim_matches('/').to_string();
+    let new_parent_abs = if new_parent.is_empty() { notes_dir(app) } else { abs_from_id(app, &new_parent) };
+    if !new_parent_abs.exists() {
+        fs::create_dir_all(&new_parent_abs).map_err(|e| e.to_string())?;
+    }
+    let filename = old_abs
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("note.md")
+        .to_string();
+    let stem = filename.trim_end_matches(".md").to_string();
+    let final_filename = unique_name(&new_parent_abs, &stem, Some("md"));
+    let new_abs = new_parent_abs.join(&final_filename);
+    fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
+    let new_id = join_rel(&new_parent, &final_filename);
+
+    let mut index = read_notes_index(app)?;
+    let mut meta = index.meta.remove(id).unwrap_or(NoteMeta {
+        id: new_id.clone(),
+        name: stem.clone(),
+        parent: new_parent.clone(),
+        title: stem.clone(),
+        tags: vec![],
+        pinned: false,
+        snippet: String::new(),
+        created_at: crate::utils::now_rfc3339(),
+        updated_at: crate::utils::now_rfc3339(),
+    });
+    meta.id = new_id.clone();
+    meta.parent = new_parent;
+    meta.name = final_filename.trim_end_matches(".md").to_string();
+    meta.updated_at = crate::utils::now_rfc3339();
+    index.meta.insert(new_id, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
+pub fn move_folder_entry(app: &AppHandle, path: &str, new_parent: &str) -> Result<String, String> {
+    let old_abs = abs_from_id(app, path);
+    if !old_abs.exists() || !old_abs.is_dir() { return Err("Folder not found".to_string()); }
+    let new_parent = new_parent.trim_matches('/').to_string();
+    let new_parent_abs = if new_parent.is_empty() { notes_dir(app) } else { abs_from_id(app, &new_parent) };
+    if !new_parent_abs.exists() {
+        fs::create_dir_all(&new_parent_abs).map_err(|e| e.to_string())?;
+    }
+    let folder_name = old_abs.file_name().and_then(|f| f.to_str()).unwrap_or("folder").to_string();
+    let final_folder = unique_name(&new_parent_abs, &folder_name, None);
+    let new_abs = new_parent_abs.join(&final_folder);
+    fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
+    let new_path = join_rel(&new_parent, &final_folder);
+    update_index_paths_after_move(app, path, &new_path)?;
+    Ok(new_path)
+}
+
+/// 文件夹被改名/移动后，更新 index 中所有以 old_prefix/ 开头的笔记 id 为 new_prefix/...
+fn update_index_paths_after_move(app: &AppHandle, old_prefix: &str, new_prefix: &str) -> Result<(), String> {
+    let mut index = read_notes_index(app)?;
+    let prefix_with_slash = format!("{}/", old_prefix.trim_end_matches('/'));
+    let new_prefix_clean = new_prefix.trim_end_matches('/');
+    let to_migrate: Vec<String> = index.meta.keys()
+        .filter(|k| k.starts_with(&prefix_with_slash) || *k == old_prefix)
+        .cloned()
+        .collect();
+    for old_id in to_migrate {
+        if let Some(mut meta) = index.meta.remove(&old_id) {
+            let new_id = if old_id == old_prefix {
+                new_prefix_clean.to_string()
+            } else {
+                format!("{}/{}", new_prefix_clean, &old_id[prefix_with_slash.len()..])
+            };
+            let new_parent = std::path::Path::new(&new_id)
+                .parent()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            meta.id = new_id.clone();
+            meta.parent = new_parent;
+            index.meta.insert(new_id, meta);
+        }
+    }
+    write_notes_index(app, &index)?;
     Ok(())
 }
 
-/// 将笔记移入回收站（软删除）
-pub fn trash_note_entry(app: &AppHandle, id: &str) -> Result<NoteMeta, String> {
+/// 删除便签 → 进回收站
+pub fn delete_note_entry(app: &AppHandle, id: &str) -> Result<(), String> {
+    let abs = abs_from_id(app, id);
+    if !abs.exists() { return Err("Note not found".to_string()); }
+    let content = fs::read_to_string(&abs).unwrap_or_default();
     let mut index = read_notes_index(app)?;
-    let pos = index.notes.iter().position(|n| n.id == id)
-        .ok_or_else(|| "Note not found".to_string())?;
-    let meta = index.notes.remove(pos);
-    index.trash.insert(0, meta.clone());
+    let meta = index.meta.remove(id).unwrap_or(NoteMeta {
+        id: id.to_string(),
+        name: abs.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+        parent: std::path::Path::new(id).parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
+        title: String::new(),
+        tags: vec![],
+        pinned: false,
+        snippet: String::new(),
+        created_at: crate::utils::now_rfc3339(),
+        updated_at: crate::utils::now_rfc3339(),
+    });
+    index.trash.insert(0, TrashedNote {
+        trash_id: Uuid::new_v4().to_string(),
+        original_path: id.to_string(),
+        content,
+        meta,
+        deleted_at: crate::utils::now_rfc3339(),
+    });
+    fs::remove_file(&abs).map_err(|e| e.to_string())?;
+    write_notes_index(app, &index)?;
+    Ok(())
+}
+
+/// 删除文件夹 → 递归把所有便签进回收站，再 rm -rf 文件夹
+pub fn delete_folder_entry(app: &AppHandle, path: &str) -> Result<(), String> {
+    let abs = abs_from_id(app, path);
+    if !abs.exists() || !abs.is_dir() { return Err("Folder not found".to_string()); }
+    let mut index = read_notes_index(app)?;
+    let prefix_with_slash = format!("{}/", path.trim_end_matches('/'));
+    let to_trash: Vec<String> = index.meta.keys()
+        .filter(|k| k.starts_with(&prefix_with_slash))
+        .cloned()
+        .collect();
+    for note_id in to_trash {
+        if let Some(meta) = index.meta.remove(&note_id) {
+            let note_abs = abs_from_id(app, &note_id);
+            let content = fs::read_to_string(&note_abs).unwrap_or_default();
+            index.trash.insert(0, TrashedNote {
+                trash_id: Uuid::new_v4().to_string(),
+                original_path: note_id,
+                content,
+                meta,
+                deleted_at: crate::utils::now_rfc3339(),
+            });
+        }
+    }
+    fs::remove_dir_all(&abs).map_err(|e| e.to_string())?;
+    write_notes_index(app, &index)?;
+    Ok(())
+}
+
+pub fn restore_note_entry(app: &AppHandle, trash_id: &str) -> Result<NoteMeta, String> {
+    let mut index = read_notes_index(app)?;
+    let pos = index.trash.iter().position(|t| t.trash_id == trash_id)
+        .ok_or_else(|| "Trashed note not found".to_string())?;
+    let trashed = index.trash.remove(pos);
+    let original = trashed.original_path.clone();
+    let parent_abs = abs_from_id(app, &original).parent().map(|p| p.to_path_buf()).unwrap_or_else(|| notes_dir(app));
+    if !parent_abs.exists() {
+        fs::create_dir_all(&parent_abs).map_err(|e| e.to_string())?;
+    }
+    let stem = std::path::Path::new(&original)
+        .file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
+    let parent_rel = std::path::Path::new(&original)
+        .parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let final_filename = unique_name(&parent_abs, &stem, Some("md"));
+    let new_id = join_rel(&parent_rel, &final_filename);
+    write_note_content(app, &new_id, &trashed.content)?;
+
+    let mut meta = trashed.meta.clone();
+    meta.id = new_id.clone();
+    meta.name = final_filename.trim_end_matches(".md").to_string();
+    meta.parent = parent_rel;
+    meta.updated_at = crate::utils::now_rfc3339();
+    index.meta.insert(new_id, meta.clone());
     write_notes_index(app, &index)?;
     Ok(meta)
 }
 
-/// 从回收站恢复笔记
-pub fn restore_note_entry(app: &AppHandle, id: &str) -> Result<NoteMeta, String> {
+pub fn permanently_delete_note_store(app: &AppHandle, trash_id: &str) -> Result<(), String> {
     let mut index = read_notes_index(app)?;
-    let pos = index.trash.iter().position(|n| n.id == id)
-        .ok_or_else(|| "Note not found in trash".to_string())?;
-    let meta = index.trash.remove(pos);
-    index.notes.insert(0, meta.clone());
-    write_notes_index(app, &index)?;
-    Ok(meta)
+    index.trash.retain(|t| t.trash_id != trash_id);
+    write_notes_index(app, &index)
 }
 
-/// 永久删除回收站中的笔记
-pub fn permanently_delete_note_store(app: &AppHandle, id: &str) -> Result<(), String> {
-    let mut index = read_notes_index(app)?;
-    index.trash.retain(|n| n.id != id);
-    write_notes_index(app, &index)?;
-    delete_note_file(app, id)
-}
-
-/// 清空回收站
 pub fn empty_notes_trash_store(app: &AppHandle) -> Result<(), String> {
     let mut index = read_notes_index(app)?;
-    for note in &index.trash {
-        let _ = delete_note_file(app, &note.id);
-    }
     index.trash.clear();
     write_notes_index(app, &index)
 }

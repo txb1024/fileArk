@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Pin,
   Plus,
   Search,
   StickyNote,
   Trash2,
-  FileText,
   X,
   Tag,
   RotateCcw,
   AlertTriangle,
   Maximize2,
   Minimize2,
+  PanelRight,
+  PanelRightClose,
+  Pin as PinIcon,
+  PinOff,
+  FolderPlus,
+  Pin,
+  FileText,
 } from "lucide-react";
 import { api } from "../api";
-import type { NoteMeta } from "../types";
+import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
 import { NoteEditor } from "../components/notes/NoteEditor";
+import { NoteTree, type RenamingTarget } from "../components/notes/NoteTree";
+import { ContextMenu, type ContextMenuItem } from "../components/notes/ContextMenu";
 
 type Language = "zh" | "en";
 
@@ -23,16 +30,16 @@ const labels = {
   zh: {
     notes: "便签",
     searchPlaceholder: "搜索便签...",
-    newNote: "新建",
+    newNote: "新建便签",
+    newFolder: "新建文件夹",
     pinned: "置顶",
-    frequent: "常用",
-    temporary: "临时",
     noNotes: "还没有便签",
-    noNotesBody: '点击"新建"创建第一个便签。',
-    deleteConfirm: "确定删除此便签？",
+    noNotesBody: '点击右上角"新建便签"或"新建文件夹"开始。',
+    deleteNoteConfirm: "删除此便签？将进入回收站。",
+    deleteFolderConfirm: "删除此文件夹？里面所有便签会进入回收站。",
     lastSaved: "最后保存",
     emptyEditor: "选择或创建一个便签开始编辑",
-    emptyEditorBody: '左侧列表点击便签，或点击右上角"新建"按钮。',
+    emptyEditorBody: "左侧点击便签，或点上方按钮新建。",
     addTag: "添加标签",
     tagPlaceholder: "输入标签",
     trash: "回收站",
@@ -41,29 +48,38 @@ const labels = {
     permanentDelete: "永久删除",
     emptyTrash: "清空回收站",
     emptyTrashConfirm: "确定清空回收站？此操作不可恢复。",
-    showTrash: "回收站",
-    hideTrash: "返回便签",
+    backToTree: "返回便签",
     shortcutNew: "Ctrl+N 新建",
     shortcutDelete: "Delete 删除",
     shortcutPin: "Ctrl+P 置顶",
-    customCategory: "自定义分类…",
-    newCategoryPlaceholder: "输入分类名",
     enterFocus: "进入专注模式 (F11)",
     exitFocus: "退出专注模式 (Esc)",
+    showOutline: "显示大纲",
+    hideOutline: "隐藏大纲",
+    pinToolbar: "固定工具栏",
+    unpinToolbar: "取消固定",
+    rename: "重命名",
+    delete: "删除",
+    pin: "置顶",
+    unpin: "取消置顶",
+    searchResults: "搜索结果",
+    noResults: "没有匹配项",
+    rootNote: "新建（根目录）",
+    rootFolder: "新建文件夹（根目录）",
   },
   en: {
     notes: "Notes",
     searchPlaceholder: "Search notes...",
-    newNote: "New",
+    newNote: "New note",
+    newFolder: "New folder",
     pinned: "Pinned",
-    frequent: "Frequent",
-    temporary: "Temporary",
     noNotes: "No notes yet",
-    noNotesBody: 'Click "New" to create your first note.',
-    deleteConfirm: "Are you sure you want to delete this note?",
+    noNotesBody: 'Click "New note" or "New folder" to start.',
+    deleteNoteConfirm: "Delete this note? It moves to trash.",
+    deleteFolderConfirm: "Delete this folder? All notes inside go to trash.",
     lastSaved: "Last saved",
     emptyEditor: "Select or create a note to start editing",
-    emptyEditorBody: 'Click a note on the left, or click "New" button.',
+    emptyEditorBody: "Click a note on the left, or use the buttons above.",
     addTag: "Add tag",
     tagPlaceholder: "Enter tag",
     trash: "Trash",
@@ -71,16 +87,25 @@ const labels = {
     restore: "Restore",
     permanentDelete: "Delete permanently",
     emptyTrash: "Empty Trash",
-    emptyTrashConfirm: "Are you sure? This action cannot be undone.",
-    showTrash: "Trash",
-    hideTrash: "Back to notes",
+    emptyTrashConfirm: "Empty trash? This cannot be undone.",
+    backToTree: "Back to notes",
     shortcutNew: "Ctrl+N New",
     shortcutDelete: "Delete",
     shortcutPin: "Ctrl+P Pin",
-    customCategory: "Custom category…",
-    newCategoryPlaceholder: "Enter category name",
     enterFocus: "Enter focus mode (F11)",
     exitFocus: "Exit focus mode (Esc)",
+    showOutline: "Show outline",
+    hideOutline: "Hide outline",
+    pinToolbar: "Pin toolbar",
+    unpinToolbar: "Unpin toolbar",
+    rename: "Rename",
+    delete: "Delete",
+    pin: "Pin",
+    unpin: "Unpin",
+    searchResults: "Results",
+    noResults: "No matches",
+    rootNote: "New (root)",
+    rootFolder: "New folder (root)",
   },
 };
 
@@ -88,45 +113,71 @@ interface NotesViewProps {
   language: Language;
 }
 
+const EXPAND_KEY = "fileark.notes.expanded";
+
 export function NotesView({ language }: NotesViewProps) {
   const t = labels[language];
-  const [notes, setNotes] = useState<NoteMeta[]>([]);
-  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-  const [noteContent, setNoteContent] = useState("");
+  const [tree, setTree] = useState<NoteTreeNode[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeMeta, setActiveMeta] = useState<NoteMeta | null>(null);
+  // editorPayload：编辑器当前显示的内容 + 它属于哪个便签 id
+  // 一定保证两者配对：activeId 切换时，editorPayload 仍是上一篇，直到新内容到位才一起更新
+  const [editorPayload, setEditorPayload] = useState<{ id: string; content: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [filterCategory, setFilterCategory] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<NoteMeta[] | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string>("");
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showTrash, setShowTrash] = useState(false);
-  const [trashedNotes, setTrashedNotes] = useState<NoteMeta[]>([]);
+  const [trashedNotes, setTrashedNotes] = useState<TrashedNote[]>([]);
   const [emptyTrashConfirm, setEmptyTrashConfirm] = useState(false);
   const [tagInputId, setTagInputId] = useState<string | null>(null);
   const [tagInputValue, setTagInputValue] = useState("");
-  const [customCategoryInput, setCustomCategoryInput] = useState(false);
-  const [customCategoryValue, setCustomCategoryValue] = useState("");
+  // inline 创建文件夹的位置（parent="" 表示根目录）；null = 不在创建中
+  const [pendingFolder, setPendingFolder] = useState<{ parent: string } | null>(null);
+  // inline 重命名目标
+  const [renamingTarget, setRenamingTarget] = useState<RenamingTarget | null>(null);
+  // 右键菜单
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    node: NoteTreeNode | null; // null = 空白处
+  } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<NoteTreeNode | null>(null);
   const [focusMode, setFocusMode] = useState(false);
-  const listRef = useRef<HTMLDivElement>(null);
+  const [outlineVisible, setOutlineVisible] = useState(true);
+  const [toolbarPinned, setToolbarPinned] = useState(false);
 
-  // 加载笔记列表
-  const loadNotes = useCallback(async () => {
-    const list = await api.listNotes();
-    setNotes(list);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(EXPAND_KEY);
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch {}
+    return new Set<string>();
+  });
+
+  // 持久化展开状态
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXPAND_KEY, JSON.stringify(Array.from(expandedPaths)));
+    } catch {}
+  }, [expandedPaths]);
+
+  const loadTree = useCallback(async () => {
+    const list = await api.listNotesTree();
+    setTree(list);
   }, []);
 
-  const loadTrashedNotes = useCallback(async () => {
+  const loadTrashed = useCallback(async () => {
     const list = await api.listTrashedNotes();
     setTrashedNotes(list);
   }, []);
 
   useEffect(() => {
-    loadNotes();
-    loadTrashedNotes();
-  }, [loadNotes, loadTrashedNotes]);
+    loadTree();
+    loadTrashed();
+  }, [loadTree, loadTrashed]);
 
-  // 搜索（使用后端搜索 API）
+  // 搜索（debounce）
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [searchResults, setSearchResults] = useState<NoteMeta[] | null>(null);
-
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults(null);
@@ -142,184 +193,307 @@ export function NotesView({ language }: NotesViewProps) {
     };
   }, [searchQuery]);
 
-  // 过滤与排序
-  const filteredNotes = useMemo(() => {
-    let list = searchResults ?? notes;
-    if (filterCategory) {
-      list = list.filter((n) => n.category === filterCategory);
+  // 在树中按 id 查找
+  const findNoteInTree = useCallback((nodes: NoteTreeNode[], id: string): NoteMeta | null => {
+    for (const n of nodes) {
+      if (n.type === "note" && n.id === id) {
+        const { type, ...meta } = n;
+        void type;
+        return meta;
+      }
+      if (n.type === "folder") {
+        const found = findNoteInTree(n.children, id);
+        if (found) return found;
+      }
     }
-    return [...list].sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    });
-  }, [notes, searchResults, filterCategory]);
-
-  // 分类统计（去重保护）
-  const categories = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const n of notes) {
-      const cat = n.category.trim();
-      if (!cat) continue;
-      map.set(cat, (map.get(cat) || 0) + 1);
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0], "zh-Hans"));
-  }, [notes]);
-
-  // 所有分类（供 select 使用）
-  const allCategories = useMemo(() => {
-    const set = new Set<string>();
-    for (const n of notes) {
-      if (n.category.trim()) set.add(n.category.trim());
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b, "zh-Hans"));
-  }, [notes]);
-
-  // 当前活跃笔记
-  const activeNote = notes.find((n) => n.id === activeNoteId) ?? null;
-
-  // 选择笔记
-  const selectNote = useCallback(async (id: string) => {
-    setActiveNoteId(id);
-    const content = await api.getNoteContent(id);
-    setNoteContent(content);
-    setDeleteConfirmId(null);
-    setTagInputId(null);
+    return null;
   }, []);
 
-  // 新建笔记
-  const handleCreate = useCallback(async () => {
-    const meta = await api.createNote({
-      category: filterCategory || "临时",
-    });
-    setNotes((prev) => [meta, ...prev]);
-    selectNote(meta.id);
-  }, [filterCategory, selectNote]);
+  // 同步 activeMeta
+  useEffect(() => {
+    if (!activeId) {
+      setActiveMeta(null);
+      return;
+    }
+    const found = findNoteInTree(tree, activeId);
+    setActiveMeta(found);
+  }, [activeId, tree, findNoteInTree]);
 
-  // 自动保存（save_note 返回 NoteMeta，就地更新）
+  // 编辑器实时上报的最新内容（debounce 还没到时存这里），切换便签前 flush
+  const pendingContentRef = useRef<{ id: string; content: string } | null>(null);
+  // 最近一次用户期望选中的 id，用于竞态丢弃过时的 getNoteContent 结果
+  const selectionTokenRef = useRef<string | null>(null);
+
+  // 选中
+  // 立刻反馈 UI（高亮），上一篇的保存与新文件的读取都放到后台，避免点击被串行 IO 阻塞。
+  const selectNote = useCallback((id: string) => {
+    if (selectionTokenRef.current === id) return;
+    selectionTokenRef.current = id;
+
+    // 立刻反馈：高亮 + 清掉 tag 输入态
+    setActiveId(id);
+    setTagInputId(null);
+
+    // 切换前未保存的内容：fire-and-forget，不阻塞 UI
+    const pending = pendingContentRef.current;
+    if (pending && pending.id && pending.id !== id) {
+      pendingContentRef.current = null;
+      api.saveNote(pending.id, pending.content).catch(() => {});
+    }
+
+    // 后台拉取新便签内容，回来时如果用户已经又切走了就丢弃
+    api
+      .getNoteContent(id)
+      .then((content) => {
+        if (selectionTokenRef.current === id) {
+          setEditorPayload({ id, content });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // 展开父目录链
+  const expandParents = useCallback((parent: string) => {
+    if (!parent) return;
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      const parts = parent.split("/");
+      for (let i = 1; i <= parts.length; i++) {
+        next.add(parts.slice(0, i).join("/"));
+      }
+      return next;
+    });
+  }, []);
+
+  // 快速创建便签：直接走后端默认名「未命名便签」，不弹窗，立刻选中
+  const quickCreateNote = useCallback(
+    async (parent: string) => {
+      try {
+        const meta = await api.createNote({ parent });
+        await loadTree();
+        if (parent) expandParents(parent);
+        selectNote(meta.id);
+        // 创建后立刻进入重命名（让用户改名；不改也无所谓，名字已是默认）
+      } catch (err) {
+        console.error("create note failed:", err);
+      }
+    },
+    [loadTree, expandParents, selectNote]
+  );
+
+  // 打开 inline 创建文件夹（在 parent 下展开一行 input）
+  const openCreateFolder = useCallback(
+    (parent: string) => {
+      if (parent) expandParents(parent);
+      setPendingFolder({ parent });
+    },
+    [expandParents]
+  );
+
+  // 提交 inline 创建文件夹（name 为空 = 取消）
+  const submitCreateFolder = useCallback(
+    async (parent: string, name: string) => {
+      setPendingFolder(null);
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      try {
+        const node = await api.createFolder({ parent, name: trimmed });
+        await loadTree();
+        if (node.type === "folder") {
+          setExpandedPaths((prev) => new Set(prev).add(node.path));
+        }
+      } catch (err) {
+        console.error("create folder failed:", err);
+      }
+    },
+    [loadTree]
+  );
+
+  const cancelCreateFolder = useCallback(() => setPendingFolder(null), []);
+
+  // 触发重命名（双击 / F2 / 右键菜单）
+  const requestRename = useCallback((node: NoteTreeNode) => {
+    if (node.type === "note") {
+      setRenamingTarget({ key: node.id, kind: "note", initialName: node.name });
+    } else {
+      setRenamingTarget({ key: node.path, kind: "folder", initialName: node.name });
+    }
+  }, []);
+
+  // 提交 inline 重命名
+  const submitRename = useCallback(
+    async (target: RenamingTarget, newName: string) => {
+      setRenamingTarget(null);
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === target.initialName) return;
+      try {
+        if (target.kind === "note") {
+          const updated = await api.renameNote(target.key, trimmed);
+          await loadTree();
+          if (activeId === target.key) setActiveId(updated.id);
+        } else {
+          const oldPath = target.key;
+          const newPath = await api.renameFolder(oldPath, trimmed);
+          await loadTree();
+          setExpandedPaths((prev) => {
+            const next = new Set<string>();
+            for (const p of prev) {
+              if (p === oldPath) next.add(newPath);
+              else if (p.startsWith(oldPath + "/"))
+                next.add(newPath + p.substring(oldPath.length));
+              else next.add(p);
+            }
+            return next;
+          });
+          if (activeId && (activeId === oldPath || activeId.startsWith(oldPath + "/"))) {
+            setActiveId(newPath + activeId.substring(oldPath.length));
+          }
+        }
+      } catch (err) {
+        console.error("rename failed:", err);
+      }
+    },
+    [loadTree, activeId]
+  );
+
+  const cancelRename = useCallback(() => setRenamingTarget(null), []);
+
+  const handleCreateChild = useCallback(
+    (parent: string, kind: "note" | "folder") => {
+      if (kind === "note") quickCreateNote(parent);
+      else openCreateFolder(parent);
+    },
+    [quickCreateNote, openCreateFolder]
+  );
+
+  // 文件夹展开/收起
+  const toggleFolder = useCallback((path: string) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  // 自动保存
+  // 只更新 activeMeta 的元数据，不触发 setTree 重建整棵侧栏树。
+  // 侧栏 title 在用户切换便签或显式操作（创建/删除/重命名/移动）时统一刷新。
   const handleContentChange = useCallback(
     async (markdown: string) => {
-      if (!activeNoteId) return;
-      setNoteContent(markdown);
+      if (!activeId) return;
       try {
-        const updated = await api.saveNote(activeNoteId, markdown);
-        setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+        const updated = await api.saveNote(activeId, markdown);
+        setActiveMeta(updated);
         setLastSavedAt(new Date().toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US"));
-      } catch {
-        // 静默失败，不阻塞编辑
-      }
-    },
-    [activeNoteId, language]
-  );
-
-  // 乐观更新辅助
-  const optimisticUpdate = useCallback(async (id: string, patch: Partial<NoteMeta>, apiCall: () => Promise<void>) => {
-    setNotes((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, ...patch, updatedAt: new Date().toISOString() } : n))
-    );
-    try {
-      await apiCall();
-    } catch {
-      // 回滚：重新加载
-      loadNotes();
-    }
-  }, [loadNotes]);
-
-  // 切换置顶（乐观更新）
-  const togglePin = useCallback(
-    (id: string, currentPinned: boolean) => {
-      optimisticUpdate(id, { pinned: !currentPinned }, () =>
-        api.updateNoteMeta(id, { pinned: !currentPinned })
-      );
-    },
-    [optimisticUpdate]
-  );
-
-  // 删除笔记（软删除）
-  const handleDelete = useCallback(
-    async (id: string) => {
-      try {
-        await api.deleteNote(id);
-        if (activeNoteId === id) {
-          setActiveNoteId(null);
-          setNoteContent("");
+        // debounce 已 fire，清掉 pending 避免下次切换重复保存
+        if (pendingContentRef.current?.id === activeId) {
+          pendingContentRef.current = null;
         }
-        setDeleteConfirmId(null);
-        setNotes((prev) => prev.filter((n) => n.id !== id));
-        loadTrashedNotes();
       } catch {
-        loadNotes();
+        // 静默
       }
     },
-    [activeNoteId, loadNotes, loadTrashedNotes]
+    [activeId, language]
   );
 
-  // 切换分类（乐观更新）
-  const changeCategory = useCallback(
-    (id: string, category: string) => {
-      optimisticUpdate(id, { category }, () => api.updateNoteMeta(id, { category }));
+  // 编辑器每次输入都上报（不 debounce），父端用 ref 暂存
+  const handlePendingChange = useCallback(
+    (markdown: string) => {
+      if (!activeId) return;
+      pendingContentRef.current = { id: activeId, content: markdown };
     },
-    [optimisticUpdate]
+    [activeId]
   );
 
-  // Tags 操作
+  // 右键菜单
+  const handleContextMenu = useCallback((e: React.MouseEvent, node: NoteTreeNode | null) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, node });
+  }, []);
+
+  // 稳定的关闭引用，避免 ContextMenu 每次重渲染都重新绑 document 事件
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // 删除
+  const handleDeleteConfirmed = useCallback(
+    async (node: NoteTreeNode) => {
+      try {
+        if (node.type === "note") {
+          await api.deleteNote(node.id);
+          if (activeId === node.id) {
+            selectionTokenRef.current = null;
+            setActiveId(null);
+            setEditorPayload(null);
+          }
+        } else {
+          await api.deleteFolder(node.path);
+          if (activeId && activeId.startsWith(node.path + "/")) {
+            selectionTokenRef.current = null;
+            setActiveId(null);
+            setEditorPayload(null);
+          }
+        }
+        await Promise.all([loadTree(), loadTrashed()]);
+      } finally {
+        setConfirmDelete(null);
+      }
+    },
+    [activeId, loadTree, loadTrashed]
+  );
+
+  // 置顶
+  const togglePin = useCallback(
+    async (id: string, currentPinned: boolean) => {
+      try {
+        await api.updateNoteMeta(id, { pinned: !currentPinned });
+        await loadTree();
+      } catch {}
+    },
+    [loadTree]
+  );
+
+  // Tags
   const addTag = useCallback(
-    (id: string, tag: string) => {
-      const note = notes.find((n) => n.id === id);
-      if (!note || note.tags.includes(tag)) return;
-      const newTags = [...note.tags, tag];
-      optimisticUpdate(id, { tags: newTags }, () => api.updateNoteMeta(id, { tags: newTags }));
+    async (id: string, tag: string) => {
+      const meta = findNoteInTree(tree, id);
+      if (!meta || meta.tags.includes(tag)) return;
+      await api.updateNoteMeta(id, { tags: [...meta.tags, tag] });
+      await loadTree();
     },
-    [notes, optimisticUpdate]
+    [tree, findNoteInTree, loadTree]
   );
 
   const removeTag = useCallback(
-    (id: string, tag: string) => {
-      const note = notes.find((n) => n.id === id);
-      if (!note) return;
-      const newTags = note.tags.filter((t) => t !== tag);
-      optimisticUpdate(id, { tags: newTags }, () => api.updateNoteMeta(id, { tags: newTags }));
+    async (id: string, tag: string) => {
+      const meta = findNoteInTree(tree, id);
+      if (!meta) return;
+      await api.updateNoteMeta(id, { tags: meta.tags.filter((x) => x !== tag) });
+      await loadTree();
     },
-    [notes, optimisticUpdate]
+    [tree, findNoteInTree, loadTree]
   );
 
-  // 回收站操作
+  // 回收站
   const handleRestore = useCallback(
-    async (id: string) => {
-      const meta = await api.restoreNote(id);
-      setNotes((prev) => [meta, ...prev]);
-      setTrashedNotes((prev) => prev.filter((n) => n.id !== id));
+    async (trashId: string) => {
+      await api.restoreNote(trashId);
+      await Promise.all([loadTree(), loadTrashed()]);
     },
-    []
+    [loadTree, loadTrashed]
   );
-
   const handlePermanentDelete = useCallback(
-    async (id: string) => {
-      await api.permanentlyDeleteNote(id);
-      setTrashedNotes((prev) => prev.filter((n) => n.id !== id));
+    async (trashId: string) => {
+      await api.permanentlyDeleteNote(trashId);
+      await loadTrashed();
     },
-    []
+    [loadTrashed]
   );
-
   const handleEmptyTrash = useCallback(async () => {
     await api.emptyNotesTrash();
-    setTrashedNotes([]);
+    await loadTrashed();
     setEmptyTrashConfirm(false);
-  }, []);
-
-  // 自定义分类提交
-  const handleCustomCategory = useCallback(
-    (noteId: string) => {
-      const cat = customCategoryValue.trim();
-      if (!cat) {
-        setCustomCategoryInput(false);
-        return;
-      }
-      changeCategory(noteId, cat);
-      setCustomCategoryInput(false);
-      setCustomCategoryValue("");
-    },
-    [customCategoryValue, changeCategory]
-  );
+  }, [loadTrashed]);
 
   // 键盘快捷键
   useEffect(() => {
@@ -331,59 +505,63 @@ export function NotesView({ language }: NotesViewProps) {
         target.tagName === "SELECT" ||
         target.isContentEditable;
 
-      // F11 切换专注模式（任何场景下都响应）
       if (e.key === "F11") {
         e.preventDefault();
         setFocusMode((v) => !v);
         return;
       }
-
-      // ESC 退出专注模式（不抢占输入框中的 Esc）
       if (e.key === "Escape" && focusMode && !inEditableField) {
         e.preventDefault();
         setFocusMode(false);
         return;
       }
-
-      // 不在输入框中拦截以下快捷键
       if (inEditableField) return;
 
-      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
-        handleCreate();
+        openCreateFolder("");
+        return;
       }
-      if (e.key === "Delete" && activeNoteId && !deleteConfirmId) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "n" || e.key === "N")) {
         e.preventDefault();
-        setDeleteConfirmId(activeNoteId);
+        quickCreateNote("");
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === "p" && activeNoteId) {
+      if (e.key === "F2" && activeMeta) {
         e.preventDefault();
-        const note = notes.find((n) => n.id === activeNoteId);
-        if (note) togglePin(activeNoteId, note.pinned);
+        requestRename({ ...activeMeta, type: "note" } as NoteTreeNode);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "p" && activeMeta) {
+        e.preventDefault();
+        togglePin(activeMeta.id, activeMeta.pinned);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [handleCreate, activeNoteId, deleteConfirmId, notes, togglePin, focusMode]);
+  }, [quickCreateNote, openCreateFolder, requestRename, activeMeta, togglePin, focusMode]);
 
-  // 格式化时间
   const formatTime = (iso: string) => {
     const d = new Date(iso);
     const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    if (diffMins < 1) return language === "zh" ? "刚刚" : "just now";
-    if (diffMins < 60) return `${diffMins}${language === "zh" ? "分钟前" : "m ago"}`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}${language === "zh" ? "小时前" : "h ago"}`;
+    const diff = Math.floor((now.getTime() - d.getTime()) / 60000);
+    if (diff < 1) return language === "zh" ? "刚刚" : "just now";
+    if (diff < 60) return `${diff}${language === "zh" ? "分钟前" : "m ago"}`;
+    const h = Math.floor(diff / 60);
+    if (h < 24) return `${h}${language === "zh" ? "小时前" : "h ago"}`;
     return d.toLocaleDateString(language === "zh" ? "zh-CN" : "en-US");
   };
 
+  const sortedSearchResults = useMemo(() => {
+    if (!searchResults) return [];
+    return [...searchResults].sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [searchResults]);
+
   return (
     <div className={focusMode ? "notes-view notes-view-focus" : "notes-view"}>
-      {/* 左侧列表面板 */}
+      {/* 左侧侧栏 */}
       <div className="notes-sidebar">
-        {/* 搜索栏 + 新建按钮 */}
         <div className="notes-toolbar">
           <div className="notes-search-box">
             <Search size={15} />
@@ -399,216 +577,122 @@ export function NotesView({ language }: NotesViewProps) {
               </button>
             )}
           </div>
-          <button className="notes-new-btn" onClick={handleCreate} title={t.shortcutNew}>
-            <Plus size={15} />
-            {t.newNote}
-          </button>
         </div>
 
-        {/* 分类过滤 */}
-        <div className="notes-categories">
+        {/* 根目录新建按钮 */}
+        <div className="notes-tree-actions-bar">
           <button
-            className={!filterCategory ? "notes-cat-btn active" : "notes-cat-btn"}
-            onClick={() => setFilterCategory(null)}
+            className="compact-button"
+            onClick={() => quickCreateNote("")}
+            title={t.rootNote}
           >
-            {language === "zh" ? "全部" : "All"}
+            <Plus size={13} /> {t.newNote}
           </button>
-          {categories.map(([cat, count]) => (
-            <button
-              key={cat}
-              className={filterCategory === cat ? "notes-cat-btn active" : "notes-cat-btn"}
-              onClick={() => setFilterCategory(filterCategory === cat ? null : cat)}
-            >
-              {cat} ({count})
-            </button>
-          ))}
           <button
-            className={showTrash ? "notes-cat-btn active" : "notes-cat-btn notes-trash-btn"}
+            className="compact-button"
+            onClick={() => openCreateFolder("")}
+            title={t.rootFolder}
+          >
+            <FolderPlus size={13} /> {t.newFolder}
+          </button>
+          <button
+            className={showTrash ? "compact-button danger" : "compact-button"}
             onClick={() => {
-              setShowTrash(!showTrash);
-              if (!showTrash) loadTrashedNotes();
+              setShowTrash((v) => !v);
+              if (!showTrash) loadTrashed();
             }}
+            title={showTrash ? t.backToTree : t.trash}
           >
-            <Trash2 size={12} />
-            {t.trash}
-            {trashedNotes.length > 0 && ` (${trashedNotes.length})`}
+            <Trash2 size={13} />
+            {trashedNotes.length > 0 && !showTrash && ` (${trashedNotes.length})`}
           </button>
         </div>
 
-        {/* 列表 */}
-        <div className="notes-list" ref={listRef}>
+        <div className="notes-list">
           {showTrash ? (
-            /* 回收站列表 */
-            trashedNotes.length === 0 ? (
-              <div className="notes-empty">
-                <Trash2 size={32} />
-                <p>{t.trashEmpty}</p>
-              </div>
-            ) : (
-              <>
-                {trashedNotes.map((note) => (
-                  <div key={note.id} className="notes-item notes-trash-item">
-                    <div className="notes-item-header">
-                      <FileText size={14} className="notes-item-icon" />
-                      <span className="notes-item-title">{note.title}</span>
-                    </div>
-                    <div className="notes-item-meta">
-                      <span className="notes-item-cat">{note.category}</span>
-                      <span className="muted small">{formatTime(note.updatedAt)}</span>
-                    </div>
-                    <div className="notes-item-actions" style={{ display: "flex" }}>
-                      <button
-                        className="notes-action-btn"
-                        onClick={() => handleRestore(note.id)}
-                        title={t.restore}
-                      >
-                        <RotateCcw size={13} />
-                      </button>
-                      <button
-                        className="notes-action-btn danger"
-                        onClick={() => handlePermanentDelete(note.id)}
-                        title={t.permanentDelete}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                <div className="notes-trash-footer">
-                  {emptyTrashConfirm ? (
-                    <div className="notes-delete-confirm">
-                      <span>
-                        <AlertTriangle size={14} style={{ verticalAlign: "-2px" }} />{" "}
-                        {t.emptyTrashConfirm}
-                      </span>
-                      <div className="notes-delete-confirm-btns">
-                        <button className="compact-button danger" onClick={handleEmptyTrash}>
-                          {t.emptyTrash}
-                        </button>
-                        <button className="compact-button" onClick={() => setEmptyTrashConfirm(false)}>
-                          {language === "zh" ? "取消" : "Cancel"}
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      className="notes-trash-empty-btn"
-                      onClick={() => setEmptyTrashConfirm(true)}
-                    >
-                      {t.emptyTrash}
-                    </button>
-                  )}
-                </div>
-              </>
-            )
-          ) : filteredNotes.length === 0 ? (
-            <div className="notes-empty">
+            <TrashList
+              items={trashedNotes}
+              t={t}
+              language={language}
+              formatTime={formatTime}
+              onRestore={handleRestore}
+              onPermanentDelete={handlePermanentDelete}
+              emptyTrashConfirm={emptyTrashConfirm}
+              setEmptyTrashConfirm={setEmptyTrashConfirm}
+              onEmptyTrash={handleEmptyTrash}
+            />
+          ) : searchResults ? (
+            <SearchResults
+              results={sortedSearchResults}
+              activeId={activeId}
+              onSelect={selectNote}
+              t={t}
+              language={language}
+              formatTime={formatTime}
+            />
+          ) : tree.length === 0 && !pendingFolder ? (
+            <div className="notes-empty" onContextMenu={(e) => handleContextMenu(e, null)}>
               <StickyNote size={32} />
               <p>{t.noNotes}</p>
               <p className="muted small">{t.noNotesBody}</p>
             </div>
           ) : (
-            filteredNotes.map((note) => (
-              <div
-                key={note.id}
-                className={note.id === activeNoteId ? "notes-item active" : "notes-item"}
-                onClick={() => selectNote(note.id)}
-              >
-                <div className="notes-item-header">
-                  <FileText size={14} className="notes-item-icon" />
-                  <span className="notes-item-title">{note.title}</span>
-                  {note.pinned && <Pin size={12} className="notes-item-pin" />}
-                </div>
-                {/* 摘要 */}
-                {note.snippet && (
-                  <div className="notes-item-snippet">{note.snippet}</div>
-                )}
-                <div className="notes-item-meta">
-                  <span className="notes-item-cat">{note.category}</span>
-                  {note.tags.length > 0 && (
-                    <span className="notes-item-tags">
-                      {note.tags.slice(0, 2).map((tag) => (
-                        <span key={tag} className="notes-item-tag">
-                          {tag}
-                        </span>
-                      ))}
-                      {note.tags.length > 2 && (
-                        <span className="notes-item-tag">+{note.tags.length - 2}</span>
-                      )}
-                    </span>
-                  )}
-                  <span className="muted small">{formatTime(note.updatedAt)}</span>
-                </div>
-                {/* 悬停操作 */}
-                <div className="notes-item-actions">
-                  <button
-                    className="notes-action-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePin(note.id, note.pinned);
-                    }}
-                    title={t.pinned}
-                  >
-                    <Pin size={13} />
-                  </button>
-                  <button
-                    className="notes-action-btn danger"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteConfirmId(deleteConfirmId === note.id ? null : note.id);
-                    }}
-                    title={language === "zh" ? "删除" : "Delete"}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-                {/* 删除确认 */}
-                {deleteConfirmId === note.id && (
-                  <div className="notes-delete-confirm" onClick={(e) => e.stopPropagation()}>
-                    <span>{t.deleteConfirm}</span>
-                    <div className="notes-delete-confirm-btns">
-                      <button className="compact-button danger" onClick={() => handleDelete(note.id)}>
-                        {language === "zh" ? "删除" : "Delete"}
-                      </button>
-                      <button className="compact-button" onClick={() => setDeleteConfirmId(null)}>
-                        {language === "zh" ? "取消" : "Cancel"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))
+            <div onContextMenu={(e) => {
+              // 树外的空白处右键 = 在根目录创建
+              if (e.target === e.currentTarget) handleContextMenu(e, null);
+            }}>
+              <NoteTree
+                nodes={tree}
+                activeId={activeId}
+                expandedPaths={expandedPaths}
+                onSelect={selectNote}
+                onToggleFolder={toggleFolder}
+                onCreateChild={handleCreateChild}
+                onContextMenu={handleContextMenu}
+                onRequestRename={requestRename}
+                pendingFolder={pendingFolder}
+                onSubmitFolder={submitCreateFolder}
+                onCancelFolder={cancelCreateFolder}
+                renamingTarget={renamingTarget}
+                onSubmitRename={submitRename}
+                onCancelRename={cancelRename}
+                language={language}
+              />
+            </div>
           )}
         </div>
       </div>
 
       {/* 右侧编辑区 */}
       <div className="notes-editor-area">
-        {activeNote ? (
+        {activeMeta ? (
           <>
             <div className="notes-editor-topbar">
               <div className="notes-editor-meta">
-                {/* Tags 编辑 */}
+                <span className="notes-breadcrumb" title={activeMeta.id}>
+                  {activeMeta.parent ? activeMeta.parent + " / " : ""}
+                  <strong>{activeMeta.title || activeMeta.name}</strong>
+                </span>
                 <div className="notes-tags-editor">
-                  {activeNote.tags.map((tag) => (
+                  {activeMeta.tags.map((tag) => (
                     <span key={tag} className="notes-tag-chip">
                       {tag}
                       <button
                         className="notes-tag-remove"
-                        onClick={() => removeTag(activeNote.id, tag)}
+                        onClick={() => removeTag(activeMeta.id, tag)}
                       >
                         <X size={10} />
                       </button>
                     </span>
                   ))}
-                  {tagInputId === activeNote.id ? (
+                  {tagInputId === activeMeta.id ? (
                     <input
                       className="notes-tag-input"
                       value={tagInputValue}
                       onChange={(e) => setTagInputValue(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && tagInputValue.trim()) {
-                          addTag(activeNote.id, tagInputValue.trim());
+                          addTag(activeMeta.id, tagInputValue.trim());
                           setTagInputValue("");
                         }
                         if (e.key === "Escape") {
@@ -617,9 +701,7 @@ export function NotesView({ language }: NotesViewProps) {
                         }
                       }}
                       onBlur={() => {
-                        if (tagInputValue.trim()) {
-                          addTag(activeNote.id, tagInputValue.trim());
-                        }
+                        if (tagInputValue.trim()) addTag(activeMeta.id, tagInputValue.trim());
                         setTagInputId(null);
                         setTagInputValue("");
                       }}
@@ -629,7 +711,7 @@ export function NotesView({ language }: NotesViewProps) {
                   ) : (
                     <button
                       className="notes-tag-add"
-                      onClick={() => setTagInputId(activeNote.id)}
+                      onClick={() => setTagInputId(activeMeta.id)}
                     >
                       <Tag size={11} />
                       {t.addTag}
@@ -638,48 +720,6 @@ export function NotesView({ language }: NotesViewProps) {
                 </div>
               </div>
               <div className="notes-editor-actions">
-                {/* 动态分类选择 */}
-                {customCategoryInput ? (
-                  <div className="notes-category-custom">
-                    <input
-                      value={customCategoryValue}
-                      onChange={(e) => setCustomCategoryValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleCustomCategory(activeNote.id);
-                        if (e.key === "Escape") {
-                          setCustomCategoryInput(false);
-                          setCustomCategoryValue("");
-                        }
-                      }}
-                      onBlur={() => handleCustomCategory(activeNote.id)}
-                      placeholder={t.newCategoryPlaceholder}
-                      autoFocus
-                    />
-                  </div>
-                ) : (
-                  <select
-                    className="notes-category-select"
-                    value={activeNote.category}
-                    onChange={(e) => {
-                      if (e.target.value === "__custom__") {
-                        setCustomCategoryInput(true);
-                        setCustomCategoryValue("");
-                      } else {
-                        changeCategory(activeNote.id, e.target.value);
-                      }
-                    }}
-                  >
-                    {allCategories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                    {/* 硬编码兜底选项 */}
-                    {!allCategories.includes("常用") && <option value="常用">{t.frequent}</option>}
-                    {!allCategories.includes("临时") && <option value="临时">{t.temporary}</option>}
-                    <option value="__custom__">{t.customCategory}</option>
-                  </select>
-                )}
                 {lastSavedAt && (
                   <span className="muted small">
                     {t.lastSaved}: {lastSavedAt}
@@ -687,16 +727,51 @@ export function NotesView({ language }: NotesViewProps) {
                 )}
                 <button
                   className="notes-focus-toggle"
+                  onClick={() => togglePin(activeMeta.id, activeMeta.pinned)}
+                  title={t.pinned}
+                  aria-label={t.pinned}
+                >
+                  <Pin size={14} className={activeMeta.pinned ? "pinned" : ""} />
+                </button>
+                <button
+                  className="notes-focus-toggle"
+                  onClick={() => setToolbarPinned((v) => !v)}
+                  title={toolbarPinned ? t.unpinToolbar : t.pinToolbar}
+                >
+                  {toolbarPinned ? <PinOff size={14} /> : <PinIcon size={14} />}
+                </button>
+                <button
+                  className="notes-focus-toggle"
+                  onClick={() => setOutlineVisible((v) => !v)}
+                  title={outlineVisible ? t.hideOutline : t.showOutline}
+                >
+                  {outlineVisible ? <PanelRightClose size={14} /> : <PanelRight size={14} />}
+                </button>
+                <button
+                  className="notes-focus-toggle"
                   onClick={() => setFocusMode((v) => !v)}
                   title={focusMode ? t.exitFocus : t.enterFocus}
-                  aria-label={focusMode ? t.exitFocus : t.enterFocus}
                 >
                   {focusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                 </button>
               </div>
             </div>
-            <div className="notes-editor-content">
-              <NoteEditor content={noteContent} onContentChange={handleContentChange} language={language} />
+            <div
+              className={
+                editorPayload && editorPayload.id === activeMeta.id
+                  ? "notes-editor-content"
+                  : "notes-editor-content loading"
+              }
+            >
+              <NoteEditor
+                noteId={editorPayload?.id ?? activeMeta.id}
+                content={editorPayload?.content ?? ""}
+                onContentChange={handleContentChange}
+                onPendingChange={handlePendingChange}
+                language={language}
+                showOutline={outlineVisible}
+                toolbarPinned={toolbarPinned}
+              />
             </div>
           </>
         ) : (
@@ -712,6 +787,236 @@ export function NotesView({ language }: NotesViewProps) {
           </div>
         )}
       </div>
+
+      {/* 右键菜单 */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={closeContextMenu}
+          items={buildContextMenuItems({
+            node: contextMenu.node,
+            t,
+            quickCreateNote,
+            openCreateFolder,
+            requestRename,
+            togglePin,
+            setConfirmDelete,
+          })}
+        />
+      )}
+
+      {/* 删除确认弹窗 */}
+      {confirmDelete && (
+        <div className="notes-modal-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="notes-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="notes-modal-header">
+              <AlertTriangle size={18} />
+              <span>
+                {confirmDelete.type === "folder" ? t.deleteFolderConfirm : t.deleteNoteConfirm}
+              </span>
+            </div>
+            <div className="notes-modal-body muted small">
+              {confirmDelete.type === "folder"
+                ? confirmDelete.path
+                : (confirmDelete as NoteMeta).id}
+            </div>
+            <div className="notes-modal-actions">
+              <button className="compact-button" onClick={() => setConfirmDelete(null)}>
+                {language === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button className="compact-button danger" onClick={() => handleDeleteConfirmed(confirmDelete)}>
+                {language === "zh" ? "删除" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// ── 子组件 ────────────────────────────────────────────────
+
+interface BuildMenuArgs {
+  node: NoteTreeNode | null;
+  t: typeof labels.zh;
+  quickCreateNote: (parent: string) => void;
+  openCreateFolder: (parent: string) => void;
+  requestRename: (node: NoteTreeNode) => void;
+  togglePin: (id: string, currentPinned: boolean) => void;
+  setConfirmDelete: (node: NoteTreeNode) => void;
+}
+
+function buildContextMenuItems({
+  node,
+  t,
+  quickCreateNote,
+  openCreateFolder,
+  requestRename,
+  togglePin,
+  setConfirmDelete,
+}: BuildMenuArgs): ContextMenuItem[] {
+  // 空白处右键 = 在根目录创建
+  if (!node) {
+    return [
+      { label: t.newNote, onClick: () => quickCreateNote("") },
+      { label: t.newFolder, onClick: () => openCreateFolder("") },
+    ];
+  }
+  if (node.type === "folder") {
+    return [
+      { label: t.newNote, onClick: () => quickCreateNote(node.path) },
+      { label: t.newFolder, onClick: () => openCreateFolder(node.path) },
+      { divider: true },
+      { label: t.rename, onClick: () => requestRename(node) },
+      { label: t.delete, onClick: () => setConfirmDelete(node), danger: true },
+    ];
+  }
+  // note
+  return [
+    {
+      label: node.pinned ? t.unpin : t.pin,
+      onClick: () => togglePin(node.id, node.pinned),
+    },
+    { label: t.rename, onClick: () => requestRename(node) },
+    { divider: true },
+    { label: t.delete, onClick: () => setConfirmDelete(node), danger: true },
+  ];
+}
+
+interface SearchResultsProps {
+  results: NoteMeta[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  t: typeof labels.zh;
+  language: Language;
+  formatTime: (iso: string) => string;
+}
+function SearchResults({ results, activeId, onSelect, t, language, formatTime }: SearchResultsProps) {
+  if (results.length === 0) {
+    return (
+      <div className="notes-empty">
+        <Search size={28} />
+        <p>{t.noResults}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="notes-search-results">
+      <div className="notes-search-results-header">
+        {t.searchResults} ({results.length})
+      </div>
+      {results.map((note) => (
+        <div
+          key={note.id}
+          className={"notes-item" + (activeId === note.id ? " active" : "")}
+          onClick={() => onSelect(note.id)}
+        >
+          <div className="notes-item-header">
+            <FileText size={14} className="notes-item-icon" />
+            <span className="notes-item-title">{note.title || note.name}</span>
+            {note.pinned && <Pin size={12} className="notes-item-pin" />}
+          </div>
+          {note.parent && <div className="notes-item-snippet muted small">{note.parent}</div>}
+          {note.snippet && <div className="notes-item-snippet">{note.snippet}</div>}
+          <div className="notes-item-meta">
+            <span className="muted small">{formatTime(note.updatedAt)}</span>
+          </div>
+        </div>
+      ))}
+      <div className="muted small" style={{ padding: "8px 12px", textAlign: "center" }}>
+        {language === "zh" ? "（按路径搜索 / 标题 / 标签 / 内容）" : "(searches path / title / tags / content)"}
+      </div>
+    </div>
+  );
+}
+
+interface TrashListProps {
+  items: TrashedNote[];
+  t: typeof labels.zh;
+  language: Language;
+  formatTime: (iso: string) => string;
+  onRestore: (trashId: string) => void;
+  onPermanentDelete: (trashId: string) => void;
+  emptyTrashConfirm: boolean;
+  setEmptyTrashConfirm: (v: boolean) => void;
+  onEmptyTrash: () => void;
+}
+function TrashList({
+  items,
+  t,
+  language,
+  formatTime,
+  onRestore,
+  onPermanentDelete,
+  emptyTrashConfirm,
+  setEmptyTrashConfirm,
+  onEmptyTrash,
+}: TrashListProps) {
+  if (items.length === 0) {
+    return (
+      <div className="notes-empty">
+        <Trash2 size={32} />
+        <p>{t.trashEmpty}</p>
+      </div>
+    );
+  }
+  return (
+    <>
+      {items.map((item) => (
+        <div key={item.trashId} className="notes-item notes-trash-item">
+          <div className="notes-item-header">
+            <FileText size={14} className="notes-item-icon" />
+            <span className="notes-item-title">{item.meta.title || item.meta.name}</span>
+          </div>
+          <div className="notes-item-meta">
+            <span className="muted small" title={item.originalPath}>
+              {item.originalPath}
+            </span>
+          </div>
+          <div className="notes-item-meta">
+            <span className="muted small">{formatTime(item.deletedAt)}</span>
+          </div>
+          <div className="notes-item-actions" style={{ display: "flex" }}>
+            <button
+              className="notes-action-btn"
+              onClick={() => onRestore(item.trashId)}
+              title={t.restore}
+            >
+              <RotateCcw size={13} />
+            </button>
+            <button
+              className="notes-action-btn danger"
+              onClick={() => onPermanentDelete(item.trashId)}
+              title={t.permanentDelete}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="notes-trash-footer">
+        {emptyTrashConfirm ? (
+          <div className="notes-delete-confirm">
+            <span>
+              <AlertTriangle size={14} style={{ verticalAlign: "-2px" }} /> {t.emptyTrashConfirm}
+            </span>
+            <div className="notes-delete-confirm-btns">
+              <button className="compact-button danger" onClick={onEmptyTrash}>
+                {t.emptyTrash}
+              </button>
+              <button className="compact-button" onClick={() => setEmptyTrashConfirm(false)}>
+                {language === "zh" ? "取消" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button className="notes-trash-empty-btn" onClick={() => setEmptyTrashConfirm(true)}>
+            {t.emptyTrash}
+          </button>
+        )}
+      </div>
+    </>
   );
 }

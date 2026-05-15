@@ -3708,6 +3708,384 @@ input {
   align-items: center;
 }
 
+/* 左侧树操作条 */
+.notes-tree-actions-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 10px;
+  flex-wrap: wrap;
+}
+
+.notes-tree-actions-bar .compact-button {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.notes-tree-actions-bar .compact-button.danger {
+  flex: 0 0 auto;
+}
+
+/* ── 树形结构 ───────────────────────────────────────────── */
+.note-tree {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.note-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px 5px 0;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+  border-radius: 4px;
+  margin: 0 4px;
+  transition: background 0.12s;
+}
+
+.note-tree-row:hover {
+  background: var(--surface-soft);
+}
+
+.note-tree-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.note-tree-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.note-tree-icon {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.note-tree-row.active .note-tree-icon {
+  color: var(--accent);
+}
+
+.note-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-tree-count {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-right: 4px;
+}
+
+.note-tree-pin {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.note-tree-actions {
+  display: none;
+  gap: 2px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.note-tree-row:hover .note-tree-actions {
+  display: flex;
+}
+
+.note-tree-action {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.note-tree-action:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.note-tree-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 2px;
+  min-width: 110px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.note-tree-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.note-tree-menu button:hover {
+  background: var(--surface-soft);
+}
+
+.note-tree-menu button.danger {
+  color: var(--danger, #c44);
+}
+
+.note-tree-menu button.danger:hover {
+  background: rgba(204, 68, 68, 0.1);
+}
+
+.note-tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+/* Typora 风格的待创建行 — 高亮显眼，明确告诉用户在哪里输入 */
+.note-tree-row.note-tree-pending {
+  background: var(--accent-soft);
+  cursor: text;
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  min-height: 28px;
+  position: relative;
+  z-index: 5;
+}
+
+.note-tree-row.note-tree-pending:hover {
+  background: var(--accent-soft);
+}
+
+.note-tree-row.note-tree-pending .note-tree-icon {
+  color: var(--accent);
+}
+
+.note-tree-row.note-tree-pending .note-tree-rename-input {
+  flex: 1;
+  min-width: 100px;
+  background: transparent;
+  border: none;
+  font-weight: 500;
+  padding: 4px 6px;
+}
+
+.note-tree-row.note-tree-pending .note-tree-rename-input::placeholder {
+  color: var(--accent);
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* 搜索结果列表 */
+.notes-search-results {
+  display: flex;
+  flex-direction: column;
+}
+
+.notes-search-results-header {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 8px 12px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* 编辑器顶部面包屑 */
+.notes-breadcrumb {
+  font-size: 12px;
+  color: var(--muted);
+  margin-right: 12px;
+}
+.notes-breadcrumb strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.notes-focus-toggle .pinned {
+  color: var(--accent);
+  fill: var(--accent);
+}
+
+/* 删除确认弹窗 */
+.notes-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  animation: notesModalFade 0.15s ease;
+}
+
+@keyframes notesModalFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.notes-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.notes-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.notes-modal-header svg {
+  color: var(--danger, #c44);
+}
+
+.notes-modal-body {
+  margin: 8px 0 16px;
+  word-break: break-all;
+}
+
+.notes-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.notes-modal-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--text);
+  outline: none;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.notes-modal-input:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.compact-button.primary {
+  background: var(--accent);
+  color: var(--accent-on, white);
+  border-color: var(--accent);
+}
+
+.compact-button.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.compact-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 右键菜单 ────────────────── */
+.context-menu {
+  position: fixed;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  z-index: 9999;
+  user-select: none;
+  animation: ctxMenuFade 0.1s ease;
+}
+
+@keyframes ctxMenuFade {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.context-menu-item:hover:not(.disabled) {
+  background: var(--accent-soft);
+}
+
+.context-menu-item.danger {
+  color: var(--danger, #c44);
+}
+
+.context-menu-item.danger:hover:not(.disabled) {
+  background: rgba(204, 68, 68, 0.12);
+}
+
+.context-menu-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
 .notes-search-box {
   flex: 1;
   display: flex;
@@ -3988,6 +4366,32 @@ input {
   flex: 1;
   overflow-y: auto;
   padding: 0;
+  position: relative;
+}
+
+/* 切换便签时（内容尚未拉到 / vditor 还在 setValue）显示 shimmer 占位，
+   让用户立刻看到反馈而不是看上一篇便签的内容直到主线程被释放 */
+.notes-editor-content.loading::after,
+.note-vditor.editor-busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background:
+    linear-gradient(
+      90deg,
+      var(--surface) 0%,
+      var(--surface-soft) 50%,
+      var(--surface) 100%
+    );
+  background-size: 200% 100%;
+  animation: notesEditorShimmer 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes notesEditorShimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
 }
 
 /* Vditor 编辑器样式适配（Typora 级体验） */
@@ -4030,6 +4434,52 @@ input {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+}
+
+/* 固定模式 — 工具栏始终可见，使用 sticky 占位避免遮挡正文 */
+.note-vditor.toolbar-pinned .vditor-toolbar {
+  position: sticky !important;
+  top: 0 !important;
+  opacity: 1 !important;
+  transform: none !important;
+  pointer-events: auto !important;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* 固定模式下不显示顶部细线提示 */
+.note-vditor.toolbar-pinned::before {
+  display: none;
+}
+
+/* 隐藏大纲 */
+.note-vditor.no-outline .vditor-outline {
+  display: none !important;
+}
+
+/* tooltip 不被外层 overflow 截掉 */
+.notes-editor-content {
+  overflow: visible !important;
+}
+.notes-editor-content .vditor,
+.notes-editor-content .vditor-toolbar,
+.notes-editor-content .vditor-toolbar__item {
+  overflow: visible !important;
+}
+.notes-editor-content .vditor-tooltipped::after,
+.notes-editor-content .vditor-tooltipped::before {
+  z-index: 9999 !important;
+}
+/* tooltip 强制显示在按钮下方，避免被工具栏自身的 sticky 遮挡 */
+.notes-editor-content .vditor-tooltipped__s::after {
+  bottom: auto !important;
+  top: 100% !important;
+  margin-top: 6px;
+}
+.notes-editor-content .vditor-tooltipped__s::before {
+  bottom: auto !important;
+  top: 100% !important;
+  border-top-color: transparent !important;
+  border-bottom-color: var(--text) !important;
 }
 
 /* 顶部 hover 提示条 — 仅在工具栏隐藏时显露一根细线，告诉用户这里有东西 */
@@ -4583,6 +5033,1118 @@ input {
 .compact-button.danger:hover {
   background: #e74c3c;
   color: white;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   预览模块 - 新增组件样式
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── CodePreview 增强 ─────────────────────── */
+.code-viewer-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.code-toolbar-meta {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+}
+
+.code-toolbar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.code-viewer.wrap pre.preview-text code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── ImagePreview EXIF 面板 ─────────────────── */
+.image-exif-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 280px;
+  backdrop-filter: blur(8px);
+}
+
+.exif-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.exif-label {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.exif-value {
+  color: #fff;
+  font-weight: 500;
+}
+
+/* ── PDF.js ─────────────────────────────── */
+.pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pdf-page-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.pdf-page-input {
+  width: 60px;
+  padding: 3px 6px;
+  font-size: 12px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pdf-toolbar-spacer {
+  flex: 1;
+}
+
+.pdf-canvas-wrapper {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  background: var(--surface-soft);
+  min-height: 0;
+}
+
+.pdf-canvas {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+  background: #fff;
+}
+
+/* ── MarkdownPreview 增强 ───────────────────── */
+.preview-markdown-layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.preview-markdown-layout.with-toc .preview-markdown-container {
+  flex: 1;
+  min-width: 0;
+}
+
+.markdown-toc {
+  width: 220px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 16px 12px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.markdown-toc-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.markdown-toc ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.markdown-toc li {
+  padding: 3px 0;
+}
+
+.markdown-toc a {
+  color: var(--text);
+  text-decoration: none;
+  display: block;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.markdown-toc a:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.markdown-toc-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+}
+
+.mermaid-block {
+  margin: 16px 0;
+  text-align: center;
+  padding: 12px;
+  background: var(--surface-soft);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  background: #fde2e2;
+  border: 1px solid #f5b8b8;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.mermaid-error pre {
+  margin-top: 8px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+/* ── PptxPreview 增强 ───────────────────────── */
+.pptx-slide-canvas {
+  aspect-ratio: 16 / 9;
+  background: #fff;
+  color: #1a1a1a;
+  border-radius: 6px;
+  padding: 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.pptx-slide-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #111;
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.pptx-slide-body {
+  font-size: 16px;
+  line-height: 1.6;
+  color: #333;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.pptx-slide-body li {
+  margin-bottom: 6px;
+}
+
+.pptx-slide-body li.level-1 {
+  font-size: 14px;
+  color: #555;
+}
+
+.pptx-slide-body li.level-2,
+.pptx-slide-body li.level-3 {
+  font-size: 13px;
+  color: #777;
+}
+
+.pptx-empty-slide {
+  color: #999;
+  font-style: italic;
+  text-align: center;
+  padding: 40px 0;
+}
+
+/* ── WordPreview 警告 ───────────────────────── */
+.word-warnings {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.word-warning-line {
+  color: #874d00;
+  margin: 2px 0;
+}
+
+.app-shell.theme-dark .word-warnings {
+  background: rgba(255, 196, 0, 0.08);
+  border-color: rgba(255, 196, 0, 0.3);
+}
+
+.app-shell.theme-dark .word-warning-line {
+  color: #ffd591;
+}
+
+/* ── ExcelPreview corner cell ───────────────── */
+.excel-corner {
+  background: var(--surface-soft) !important;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+
+.excel-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-soft);
+}
+
+.excel-row-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-soft);
+}
+
+/* ── UnsupportedPreview 多按钮 ──────────────── */
+.unsupported-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.unsupported-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── HexPreview ─────────────────────────────── */
+.preview-hex-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.hex-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.hex-meta {
+  color: var(--muted);
+}
+
+.hex-magic {
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+.hex-viewer {
+  flex: 1;
+  overflow: auto;
+  font-family: "Cascadia Code", "Consolas", "Menlo", monospace;
+  font-size: 12.5px;
+  background: var(--surface);
+  min-height: 0;
+}
+
+.hex-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.hex-table th {
+  padding: 4px 8px;
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: var(--surface-soft);
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+
+.hex-table td {
+  padding: 2px 8px;
+  white-space: pre;
+}
+
+.hex-cell-offset {
+  color: var(--muted);
+  user-select: none;
+}
+
+.hex-cell-hex {
+  color: var(--text);
+  letter-spacing: 0.3px;
+}
+
+.hex-cell-ascii {
+  color: var(--accent-strong);
+  border-left: 1px dashed var(--border);
+}
+
+.hex-table tr:hover td {
+  background: var(--surface-soft);
+}
+
+.hex-truncated-note {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+/* ── SubtitlePreview ────────────────────────── */
+.preview-subtitle-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.subtitle-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.subtitle-search {
+  flex: 1;
+  padding: 4px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.subtitle-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.subtitle-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  min-height: 0;
+}
+
+.subtitle-line {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.subtitle-line:last-child {
+  border-bottom: none;
+}
+
+.subtitle-time {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.subtitle-time-start,
+.subtitle-time-end {
+  color: var(--accent-strong);
+}
+
+.subtitle-time-arrow {
+  color: var(--muted);
+}
+
+.subtitle-text {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.subtitle-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 60px 0;
+  font-size: 13px;
+}
+
+/* ── IpynbPreview ───────────────────────────── */
+.preview-ipynb-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.ipynb-meta {
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ipynb-cell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.ipynb-markdown-cell {
+  padding: 12px 16px;
+}
+
+.ipynb-code-cell {
+  padding: 0;
+}
+
+.ipynb-cell-prompt {
+  padding: 6px 12px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--accent-strong);
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+}
+
+.ipynb-outputs {
+  border-top: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 8px 12px;
+}
+
+.ipynb-stream,
+.ipynb-text-output {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.ipynb-stream.stderr {
+  color: #d33;
+}
+
+.ipynb-error {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  background: #fde2e2;
+  color: #911;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+}
+
+.ipynb-image,
+.ipynb-svg svg {
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  display: block;
+}
+
+.ipynb-html {
+  margin: 8px 0;
+}
+
+/* ── ArchivePreview ─────────────────────────── */
+.preview-archive-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.archive-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.archive-meta {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.archive-toolbar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.archive-tree {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 13px;
+  padding: 4px 0;
+  min-height: 0;
+}
+
+.archive-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 100px 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 0;
+  cursor: default;
+}
+
+.archive-row.is-dir {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+.archive-row:hover {
+  background: var(--surface-soft);
+}
+
+.archive-icon {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.archive-row.is-dir .archive-icon {
+  color: var(--accent);
+}
+
+.archive-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-size,
+.archive-date {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── EmlPreview ─────────────────────────────── */
+.preview-eml-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.eml-header {
+  padding: 16px 20px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.eml-subject {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.eml-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.eml-header-row svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.eml-header-label {
+  color: var(--muted);
+  width: 50px;
+  flex-shrink: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.eml-header-value {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.eml-body-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.eml-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  min-height: 0;
+}
+
+.eml-html-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  border: none;
+  background: #fff;
+}
+
+.eml-text {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: var(--text);
+}
+
+.eml-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 40px 0;
+}
+
+.eml-attachments {
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  background: var(--surface-soft);
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.eml-attachments-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.eml-attachment-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.eml-attachment-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eml-attachment-meta {
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* ── EpubPreview ────────────────────────────── */
+.preview-epub-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 600px;
+}
+
+.epub-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.epub-toolbar-spacer {
+  flex: 1;
+}
+
+.epub-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.epub-toc-panel {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--surface-soft);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.epub-toc-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.epub-toc-panel li {
+  margin: 2px 0;
+}
+
+.epub-toc-panel button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 4px 8px;
+  width: 100%;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.epub-toc-panel button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.epub-toc-panel ul ul {
+  padding-left: 16px;
+  font-size: 12px;
+}
+
+.epub-viewer-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  min-width: 0;
+}
+
+.epub-viewer {
+  flex: 1;
+  height: 100%;
+  min-height: 500px;
+  overflow: hidden;
+}
+
+.epub-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, 0.18);
+  color: #fff;
+  border: none;
+  width: 40px;
+  height: 60px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+
+.epub-nav:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.epub-nav-prev {
+  left: 8px;
+}
+
+.epub-nav-next {
+  right: 8px;
+}
+
+/* ── FontPreview ────────────────────────────── */
+.preview-font-container {
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.font-meta {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.font-meta-name {
+  margin: 0 0 8px 0;
+  font-size: 32px;
+  color: var(--text);
+}
+
+.font-meta-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.font-meta-line {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 2px 0;
+}
+
+.font-meta-error {
+  background: #fff7e6;
+  color: #874d00;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.font-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.font-size-slider {
+  flex: 1;
+}
+
+.font-size-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  width: 50px;
+}
+
+.font-custom-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+.font-sample-section {
+  margin-bottom: 18px;
+}
+
+.font-sample-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.font-sample-block {
+  padding: 16px 20px;
+  background: var(--surface-soft);
+  border-radius: 8px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ── GeoPreview ─────────────────────────────── */
+.preview-geo-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 500px;
+}
+
+.geo-toolbar {
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.geo-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.geo-map {
+  flex: 1;
+  min-height: 0;
+}
+
+/* leaflet 与暗色主题协调 */
+.app-shell.theme-dark .leaflet-container {
+  background: #232a35;
+}
+
+/* ── Model3DPreview ─────────────────────────── */
+.preview-model3d-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 500px;
+}
+
+.model3d-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.model3d-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.model3d-hint {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.model3d-canvas-wrapper {
+  flex: 1;
+  position: relative;
+  background: #1a1d23;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.model3d-canvas-wrapper canvas {
+  display: block;
+}
+
+.model3d-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  z-index: 1;
+}
+
+.model3d-loading .spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── RtfPreview ─────────────────────────────── */
+.preview-rtf-container {
+  padding: 24px;
+  overflow-y: auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.rtf-page {
+  max-width: 800px;
+  margin: 0 auto;
+  background: var(--surface);
+  padding: 32px 40px;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.rtf-page p {
+  margin: 0 0 12px 0;
 }
 
 .compact-button:hover {

@@ -155,37 +155,74 @@ pub struct SearchFileResult {
 
 // ── 便签 ────────────────────────────────────────────────────
 
+/// 便签元数据。id 即相对路径（POSIX 分隔符），如 "工作/项目 A/周报.md"
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteMeta {
     pub id: String,
+    pub name: String,
+    pub parent: String,
     pub title: String,
     pub tags: Vec<String>,
     pub pinned: bool,
-    pub category: String,
     pub snippet: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
+/// 树节点：folder 或 note
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum NoteTreeNode {
+    #[serde(rename = "folder")]
+    Folder {
+        path: String,
+        name: String,
+        parent: String,
+        children: Vec<NoteTreeNode>,
+    },
+    #[serde(rename = "note")]
+    Note(NoteMeta),
+}
+
+/// 回收站项 — 含完整内容快照便于恢复
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedNote {
+    pub trash_id: String,
+    pub original_path: String,
+    pub content: String,
+    pub meta: NoteMeta,
+    pub deleted_at: String,
+}
+
+/// 索引：path → meta 的缓存 + 回收站
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct NotesIndex {
-    pub notes: Vec<NoteMeta>,
-    pub trash: Vec<NoteMeta>,
+    pub meta: std::collections::HashMap<String, NoteMeta>,
+    pub trash: Vec<TrashedNote>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateNoteInput {
-    pub title: Option<String>,
-    pub category: Option<String>,
+    pub parent: String,
+    pub name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFolderInput {
+    pub parent: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateNoteMetaInput {
-    pub title: Option<String>,
     pub tags: Option<Vec<String>>,
     pub pinned: Option<bool>,
-    pub category: Option<String>,
 }
 
 // ── 输入 DTO ────────────────────────────────────────────────

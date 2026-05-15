@@ -542,6 +542,24 @@ fn get_preview_info(file_path: String) -> Result<PreviewInfo, String> {
         "pptx".to_string()
     } else if utils::HTML_EXTENSIONS.contains(&ext.as_str()) {
         "html".to_string()
+    } else if utils::IPYNB_EXTENSIONS.contains(&ext.as_str()) {
+        "ipynb".to_string()
+    } else if utils::EPUB_EXTENSIONS.contains(&ext.as_str()) {
+        "epub".to_string()
+    } else if utils::ARCHIVE_EXTENSIONS.contains(&ext.as_str()) {
+        "archive".to_string()
+    } else if utils::SUBTITLE_EXTENSIONS.contains(&ext.as_str()) {
+        "subtitle".to_string()
+    } else if utils::EMAIL_EXTENSIONS.contains(&ext.as_str()) {
+        "email".to_string()
+    } else if utils::MODEL3D_EXTENSIONS.contains(&ext.as_str()) {
+        "model3d".to_string()
+    } else if utils::FONT_EXTENSIONS.contains(&ext.as_str()) {
+        "font".to_string()
+    } else if utils::GEO_EXTENSIONS.contains(&ext.as_str()) {
+        "geo".to_string()
+    } else if utils::RTF_EXTENSIONS.contains(&ext.as_str()) {
+        "rtf".to_string()
     } else if utils::VIDEO_EXTENSIONS.contains(&ext.as_str()) {
         "video".to_string()
     } else if utils::AUDIO_EXTENSIONS.contains(&ext.as_str()) {
@@ -552,6 +570,9 @@ fn get_preview_info(file_path: String) -> Result<PreviewInfo, String> {
         "image".to_string()
     } else if is_text {
         "text".to_string()
+    } else if ext == "doc" {
+        // .doc 在前端给友好提示（mammoth 仅支持 docx）
+        "word_legacy".to_string()
     } else if utils::UNSUPPORTED_EXTENSIONS.contains(&ext.as_str()) {
         "unsupported".to_string()
     } else {
@@ -785,9 +806,11 @@ fn clear_inbox(app: tauri::AppHandle) -> Result<AppData, String> {
 // ═══════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn list_notes(app: tauri::AppHandle) -> Result<Vec<NoteMeta>, String> {
+fn list_notes_tree(app: tauri::AppHandle) -> Result<Vec<NoteTreeNode>, String> {
+    migrate_old_notes_if_needed(&app)?;
     let index = read_notes_index(&app)?;
-    Ok(index.notes)
+    let root = notes_dir(&app);
+    Ok(scan_tree(&app, &root, "", &index))
 }
 
 #[tauri::command]
@@ -797,104 +820,68 @@ fn get_note_content(app: tauri::AppHandle, id: String) -> Result<String, String>
 
 #[tauri::command]
 fn create_note(app: tauri::AppHandle, input: CreateNoteInput) -> Result<NoteMeta, String> {
-    let mut index = read_notes_index(&app)?;
-    let id = Uuid::new_v4().to_string();
-    let ts = utils::now_rfc3339();
+    create_note_entry(&app, &input.parent, input.name.as_deref())
+}
 
-    // 如果未提供标题，创建默认内容带标题
-    let title = input.title.unwrap_or_else(|| "未命名便签".to_string());
-    let category = input.category.unwrap_or_else(|| "临时".to_string());
-
-    let default_content = format!("# {}\n\n", title);
-    write_note_content(&app, &id, &default_content)?;
-    let snippet = generate_snippet(&default_content, 120);
-
-    let meta = NoteMeta {
-        id,
-        title,
-        tags: vec![],
-        pinned: false,
-        category,
-        snippet,
-        created_at: ts.clone(),
-        updated_at: ts,
-    };
-
-    index.notes.insert(0, meta.clone());
-    write_notes_index(&app, &index)?;
-    Ok(meta)
+#[tauri::command]
+fn create_folder(app: tauri::AppHandle, input: CreateFolderInput) -> Result<NoteTreeNode, String> {
+    create_folder_entry(&app, &input.parent, &input.name)
 }
 
 #[tauri::command]
 fn save_note(app: tauri::AppHandle, id: String, content: String) -> Result<NoteMeta, String> {
-    write_note_content(&app, &id, &content)?;
-
-    // 更新索引中的标题、摘要和更新时间
-    let mut index = read_notes_index(&app)?;
-    let ts = utils::now_rfc3339();
-    let snippet = generate_snippet(&content, 120);
-    let mut updated_meta: Option<NoteMeta> = None;
-    for note in &mut index.notes {
-        if note.id == id {
-            if let Some(new_title) = extract_title_from_content(&content) {
-                note.title = new_title;
-            }
-            note.snippet = snippet;
-            note.updated_at = ts;
-            updated_meta = Some(note.clone());
-            break;
-        }
-    }
-    write_notes_index(&app, &index)?;
-    updated_meta.ok_or_else(|| "Note not found".to_string())
+    save_note_entry(&app, &id, &content)
 }
 
 #[tauri::command]
 fn update_note_meta(app: tauri::AppHandle, id: String, input: UpdateNoteMetaInput) -> Result<(), String> {
-    let mut index = read_notes_index(&app)?;
-    let ts = utils::now_rfc3339();
-    for note in &mut index.notes {
-        if note.id == id {
-            if let Some(title) = input.title {
-                note.title = title;
-            }
-            if let Some(tags) = input.tags {
-                note.tags = tags;
-            }
-            if let Some(pinned) = input.pinned {
-                note.pinned = pinned;
-            }
-            if let Some(category) = input.category {
-                note.category = category;
-            }
-            note.updated_at = ts;
-            break;
-        }
-    }
-    write_notes_index(&app, &index)?;
-    Ok(())
+    update_note_meta_entry(&app, &id, input.tags, input.pinned)
+}
+
+#[tauri::command]
+fn rename_note(app: tauri::AppHandle, id: String, new_name: String) -> Result<NoteMeta, String> {
+    rename_note_entry(&app, &id, &new_name)
+}
+
+#[tauri::command]
+fn rename_folder(app: tauri::AppHandle, path: String, new_name: String) -> Result<String, String> {
+    rename_folder_entry(&app, &path, &new_name)
+}
+
+#[tauri::command]
+fn move_note(app: tauri::AppHandle, id: String, new_parent: String) -> Result<NoteMeta, String> {
+    move_note_entry(&app, &id, &new_parent)
+}
+
+#[tauri::command]
+fn move_folder(app: tauri::AppHandle, path: String, new_parent: String) -> Result<String, String> {
+    move_folder_entry(&app, &path, &new_parent)
 }
 
 #[tauri::command]
 fn delete_note(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    trash_note_entry(&app, &id)?;
-    Ok(())
+    delete_note_entry(&app, &id)
 }
 
 #[tauri::command]
-fn list_trashed_notes(app: tauri::AppHandle) -> Result<Vec<NoteMeta>, String> {
+fn delete_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    delete_folder_entry(&app, &path)
+}
+
+#[tauri::command]
+fn list_trashed_notes(app: tauri::AppHandle) -> Result<Vec<TrashedNote>, String> {
     let index = read_notes_index(&app)?;
     Ok(index.trash)
 }
 
 #[tauri::command]
-fn restore_note(app: tauri::AppHandle, id: String) -> Result<NoteMeta, String> {
-    restore_note_entry(&app, &id)
+fn restore_note(app: tauri::AppHandle, trash_id: String) -> Result<NoteMeta, String> {
+    restore_note_entry(&app, &trash_id)
 }
 
 #[tauri::command]
-fn permanently_delete_note(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    permanently_delete_note_store(&app, &id)
+fn permanently_delete_note(app: tauri::AppHandle, trash_id: String) -> Result<(), String> {
+    permanently_delete_note_store(&app, &trash_id)
 }
 
 #[tauri::command]
@@ -919,25 +906,26 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
     let index = read_notes_index(&app)?;
     let lower = query.trim().to_lowercase();
     if lower.is_empty() {
-        return Ok(index.notes);
+        return Ok(index.meta.values().cloned().collect());
     }
     let mut results: Vec<NoteMeta> = vec![];
-    for note in &index.notes {
+    for (id, note) in index.meta.iter() {
         let meta_match = note.title.to_lowercase().contains(&lower)
+            || note.name.to_lowercase().contains(&lower)
+            || note.parent.to_lowercase().contains(&lower)
             || note.tags.iter().any(|t| t.to_lowercase().contains(&lower))
-            || note.category.to_lowercase().contains(&lower)
             || note.snippet.to_lowercase().contains(&lower);
         if meta_match {
             results.push(note.clone());
             continue;
         }
-        // 搜索笔记内容
-        if let Ok(content) = read_note_content(&app, &note.id) {
+        if let Ok(content) = read_note_content(&app, id) {
             if content.to_lowercase().contains(&lower) {
                 results.push(note.clone());
             }
         }
     }
+    results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(results)
 }
 
@@ -1357,12 +1345,18 @@ fn main() {
             start_watching,
             stop_watching,
             search_project_files,
-            list_notes,
+            list_notes_tree,
             get_note_content,
             create_note,
+            create_folder,
             save_note,
             update_note_meta,
+            rename_note,
+            rename_folder,
+            move_note,
+            move_folder,
             delete_note,
+            delete_folder,
             search_notes,
             list_trashed_notes,
             restore_note,

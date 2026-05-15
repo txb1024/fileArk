@@ -114,26 +114,56 @@ export type TrashItem = {
 
 // 便签
 export type NoteMeta = {
+  /** 相对路径，POSIX 分隔符，如 "工作/项目 A/周报.md"。同时是唯一 ID */
   id: string;
+  /** 文件名（不含 .md 扩展名） */
+  name: string;
+  /** 父文件夹相对路径，根目录为 "" */
+  parent: string;
+  /** 内容首行 # 提取的标题 */
   title: string;
   tags: string[];
   pinned: boolean;
-  category: string;
   snippet: string;
   createdAt: string;
   updatedAt: string;
 };
 
+/** 树节点 — 文件夹 */
+export type NoteFolderNode = {
+  type: "folder";
+  path: string;
+  name: string;
+  parent: string;
+  children: NoteTreeNode[];
+};
+
+/** 树节点 — 便签 */
+export type NoteFileNode = NoteMeta & { type: "note" };
+
+export type NoteTreeNode = NoteFolderNode | NoteFileNode;
+
+/** 回收站项 */
+export type TrashedNote = {
+  trashId: string;
+  originalPath: string;
+  meta: NoteMeta;
+  deletedAt: string;
+};
+
 export type CreateNoteInput = {
-  title?: string;
-  category?: string;
+  parent: string;
+  name?: string;
+};
+
+export type CreateFolderInput = {
+  parent: string;
+  name: string;
 };
 
 export type UpdateNoteMetaInput = {
-  title?: string;
   tags?: string[];
   pinned?: boolean;
-  category?: string;
 };
 
 // UI 类型
@@ -319,16 +349,22 @@ export type ArchiveApi = {
     Array<{ name: string; path: string; projectName: string; category: string; size: number; isDirectory: boolean }>
   >;
   // 便签
-  listNotes: () => Promise<NoteMeta[]>;
+  listNotesTree: () => Promise<NoteTreeNode[]>;
   getNoteContent: (id: string) => Promise<string>;
   createNote: (input: CreateNoteInput) => Promise<NoteMeta>;
+  createFolder: (input: CreateFolderInput) => Promise<NoteTreeNode>;
   saveNote: (id: string, content: string) => Promise<NoteMeta>;
   updateNoteMeta: (id: string, input: UpdateNoteMetaInput) => Promise<void>;
+  renameNote: (id: string, newName: string) => Promise<NoteMeta>;
+  renameFolder: (path: string, newName: string) => Promise<string>;
+  moveNote: (id: string, newParent: string) => Promise<NoteMeta>;
+  moveFolder: (path: string, newParent: string) => Promise<string>;
   deleteNote: (id: string) => Promise<void>;
+  deleteFolder: (path: string) => Promise<void>;
   searchNotes: (query: string) => Promise<NoteMeta[]>;
-  listTrashedNotes: () => Promise<NoteMeta[]>;
-  restoreNote: (id: string) => Promise<NoteMeta>;
-  permanentlyDeleteNote: (id: string) => Promise<void>;
+  listTrashedNotes: () => Promise<TrashedNote[]>;
+  restoreNote: (trashId: string) => Promise<NoteMeta>;
+  permanentlyDeleteNote: (trashId: string) => Promise<void>;
   emptyNotesTrash: () => Promise<void>;
   /** 保存便签内嵌资源（图片等），返回绝对路径，前端用 convertFileSrc 转 webview URL */
   saveNoteAsset: (data: string, ext: string) => Promise<string>;
