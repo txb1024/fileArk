@@ -76,7 +76,10 @@ export function SpotlightSearch({
   const [fileResults, setFileResults] = useState<SearchResult[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<number | undefined>(undefined);
+  const [isClosing, setIsClosing] = useState(false);
 
   // 项目 + 收件箱（同步匹配）
   const localResults = useMemo<SearchResult[]>(() => {
@@ -186,7 +189,7 @@ export function SpotlightSearch({
       if (results.length === 0) {
         if (e.key === "Escape") {
           e.preventDefault();
-          onClose();
+          if (!isClosing) setIsClosing(true);
         }
         return;
       }
@@ -207,45 +210,75 @@ export function SpotlightSearch({
           break;
         case "Escape":
           e.preventDefault();
-          onClose();
+          if (!isClosing) setIsClosing(true);
           break;
       }
     },
-    [results, selectedIndex, onClose]
+    [results, selectedIndex, isClosing]
   );
 
-  // 选择结果
+  // 请求关闭：先播放 Spring 退出动画，动画结束后再真正关闭
+  const isClosingRef = useRef(isClosing);
+  useEffect(() => {
+    isClosingRef.current = isClosing;
+  }, [isClosing]);
+
+  const handleRequestClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    setIsClosing(true);
+  }, []);
+
+  // 动画结束回调（overlay 动画结束时触发）
+  const pendingActionRef = useRef<(() => void) | null>(null);
+  const handleOverlayAnimationEnd = useCallback((e?: any) => {
+    // 只响应 overlay 的退出动画，不响应 container 的动画
+    if (e && e.animationName !== "spotlight-overlay-out") return;
+    if (!isClosingRef.current) return;
+    const pending = pendingActionRef.current;
+    pendingActionRef.current = null;
+    setIsClosing(false);
+    // 先执行待定动作，再关闭
+    if (pending) pending();
+    onClose();
+  }, [onClose]);
+
+  // 选择结果（先存动作，等退出动画结束后再执行）
   const handleSelect = (result: SearchResult) => {
     if (result.type === "project") {
       const project = data.projects.find((p) => p.id === result.id);
       if (project) {
-        onOpenProject(project);
-        onClose();
+        pendingActionRef.current = () => onOpenProject(project);
+        if (!isClosing) setIsClosing(true);
       }
     } else if (result.type === "file") {
       if (result.isDirectory) {
-        const parent = result.path.substring(
-          0,
-          result.path.lastIndexOf("\\") !== -1
-            ? result.path.lastIndexOf("\\")
-            : result.path.lastIndexOf("/")
-        );
-        api.openFolder(parent);
+        const sep = result.path.includes("\\") ? "\\" : "/";
+        const parent = result.path.substring(0, result.path.lastIndexOf(sep));
+        pendingActionRef.current = () => api.openFolder(parent);
       } else {
-        api.openFile(result.path);
+        pendingActionRef.current = () => api.openFile(result.path);
       }
-      onClose();
+      if (!isClosing) setIsClosing(true);
     } else if (result.type === "inbox") {
-      onSelectInbox?.(result.id);
-      onClose();
+      pendingActionRef.current = () => onSelectInbox?.(result.id);
+      if (!isClosing) setIsClosing(true);
     }
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="spotlight-overlay" onClick={onClose}>
-      <div className="spotlight-container" onClick={(e) => e.stopPropagation()}>
+    <div
+      className={`spotlight-overlay${isClosing ? " closing" : ""}`}
+      ref={overlayRef}
+      onClick={handleRequestClose}
+      onAnimationEnd={handleOverlayAnimationEnd}
+    >
+      <div
+        className={`spotlight-container${isClosing ? " closing" : ""}`}
+        ref={containerRef}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* 搜索框 */}
         <div className="spotlight-input-wrapper">
           <Search size={20} className="spotlight-search-icon" />
@@ -261,7 +294,7 @@ export function SpotlightSearch({
             }}
             onKeyDown={handleKeyDown}
           />
-          <button className="spotlight-close-btn" onClick={onClose}>
+          <button className="spotlight-close-btn" onClick={handleRequestClose}>
             <X size={16} />
           </button>
         </div>
@@ -297,7 +330,7 @@ export function SpotlightSearch({
                           <HighlightText text={result.meta || result.path} query={query} />
                         </span>
                       </div>
-                      {result.size != null && (
+                      {result.size != null && !result.isDirectory && (
                         <span className="spotlight-item-size">{formatSize(result.size)}</span>
                       )}
                     </button>

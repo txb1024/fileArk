@@ -53,7 +53,7 @@ import { storage } from "./utils";
 type View = "home" | "projects" | "inbox" | "search" | "settings" | "trash" | "category-edit";
 type Language = "zh" | "en";
 type ThemeMode = "light" | "dark";
-type AccentColor = "teal" | "blue" | "violet" | "orange";
+type AccentColor = "blue" | "teal" | "violet" | "orange";
 type SortMode = "name" | "time" | "size";
 type SortDirection = "asc" | "desc";
 type FileScale = "compact" | "comfortable" | "large";
@@ -355,7 +355,7 @@ export function App() {
     storage.get("archive.theme", "light" as ThemeMode)
   );
   const [accentColor, setAccentColor] = useState<AccentColor>(() =>
-    storage.get("archive.accent", "teal" as AccentColor)
+    storage.get("archive.accent", "blue" as AccentColor)
   );
   const [dialog, setDialog] = useState<DialogState>({ type: "none" });
   const [newProjectOpen, setNewProjectOpen] = useState(false);

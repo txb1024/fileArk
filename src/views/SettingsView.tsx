@@ -123,10 +123,10 @@ export function SettingsView({
           <div className="accent-swatches">
             {(
               [
-                ["teal", "#2ec4b6"],
-                ["blue", "#3b82f6"],
-                ["violet", "#8b5cf6"],
-                ["orange", "#f59e0b"],
+                ["blue", "#2383e2"],
+                ["teal", "#0f7b6f"],
+                ["violet", "#9065b0"],
+                ["orange", "#d9730d"],
               ] as const
             ).map(([name, color]) => (
               <button
