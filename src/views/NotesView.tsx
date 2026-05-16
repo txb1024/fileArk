@@ -21,14 +21,18 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
-import { NoteEditor } from "../components/notes/NoteEditor";
-import { NoteTree, type RenamingTarget } from "../components/notes/NoteTree";
+import { NoteEditor, dropEditorCache } from "../components/notes/NoteEditor";
+import {
+  NoteTree,
+  activeNoteIdStore,
+  type RenamingTarget,
+} from "../components/notes/NoteTree";
 import { ContextMenu, type ContextMenuItem } from "../components/notes/ContextMenu";
 import { EditorErrorBoundary } from "../components/notes/EditorErrorBoundary";
 
 type Language = "zh" | "en";
 
-/** 在树中按 id 查找便签元数据（纯函数，供 selectNote 同步更新 activeMeta 等复用） */
+/** 在树中按 id 查找便签元数据 */
 function findNoteInTree(nodes: NoteTreeNode[], id: string): NoteMeta | null {
   for (const n of nodes) {
     if (n.type === "note" && n.id === id) {
@@ -137,10 +141,26 @@ export function NotesView({ language }: NotesViewProps) {
   const t = labels[language];
   const [tree, setTree] = useState<NoteTreeNode[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [activeMeta, setActiveMeta] = useState<NoteMeta | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
+
+  // 同步到 NoteTree 的外部 store：高亮态走选择性订阅,
+  // 点击便签时只「旧高亮」「新高亮」两行重渲染,整棵树跳过 reconcile。
+  useEffect(() => {
+    activeNoteIdStore.set(activeId);
+  }, [activeId]);
+
+  /** 选中便签的展示用 meta：只由 tree + activeId 推导，单一数据源（保存后通过 loadTree 刷新树） */
+  const activeMeta = useMemo(
+    () => (activeId ? findNoteInTree(tree, activeId) : null),
+    [tree, activeId],
+  );
+
   // editorPayload：编辑器当前显示的内容 + 它属于哪个便签 id
   // 一定保证两者配对：activeId 切换时，editorPayload 仍是上一篇，直到新内容到位才一起更新
   const [editorPayload, setEditorPayload] = useState<{ id: string; content: string } | null>(null);
+  const editorPayloadRef = useRef(editorPayload);
+  editorPayloadRef.current = editorPayload;
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<NoteMeta[] | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string>("");
@@ -211,40 +231,31 @@ export function NotesView({ language }: NotesViewProps) {
     };
   }, [searchQuery]);
 
-  // 同步 activeMeta（树刷新 / 外部变更时与 activeId 对齐；点击便签时由 selectNote 抢先同步，避免一帧错位）
-  useEffect(() => {
-    if (!activeId) {
-      setActiveMeta(null);
-      return;
-    }
-    const found = findNoteInTree(tree, activeId);
-    setActiveMeta(found);
-  }, [activeId, tree]);
-
   // 编辑器实时上报的最新内容（debounce 还没到时存这里），切换便签前 flush
   const pendingContentRef = useRef<{ id: string; content: string } | null>(null);
   // 最近一次用户期望选中的 id，用于竞态丢弃过时的 getNoteContent 结果
   const selectionTokenRef = useRef<string | null>(null);
 
-  // 选中
-  // 立刻反馈 UI（高亮），上一篇的保存与新文件的读取都放到后台，避免点击被串行 IO 阻塞。
+  // 选中：只更新 activeId；activeMeta 由 useMemo(tree, activeId) 推导；selectNote 引用保持稳定，避免侧栏 memo 陈旧闭包
+  // 不清空 editorPayload：让 Vditor 实例复用 + 上一篇内容暂留在编辑器里（由 .loading 蒙层遮盖），
+  // 新内容到位后再触发一次 setValue。
+  // 避免「key 变 → 销毁旧 Vditor + 创建新 Vditor（空）+ 内容到达再 setValue」的三重同步开销，
+  // 这在 StrictMode dev 下会被双重挂载放大到 1～2 秒主线程冻结，正是「点击便签卡死」的元凶。
   const selectNote = useCallback((id: string) => {
-    if (selectionTokenRef.current === id) return;
+    // 不能用 selectionTokenRef === id 作为「跳过」条件：token 在请求发出前就写入，若 getNoteContent 失败/
+    // 被竞态丢弃，用户再点同一便签会永远 return，正文一直 loading，像卡死。仅在已选中且正文已到位时跳过。
+    if (activeIdRef.current === id && editorPayloadRef.current?.id === id) return;
     selectionTokenRef.current = id;
 
-    // 立刻反馈：高亮 + 与树数据同步的 meta（避免等 useEffect 才更新，与侧栏选中错位一帧）
     setActiveId(id);
-    setActiveMeta(findNoteInTree(tree, id));
     setTagInputId(null);
 
-    // 切换前未保存的内容：fire-and-forget，不阻塞 UI
     const pending = pendingContentRef.current;
     if (pending && pending.id && pending.id !== id) {
       pendingContentRef.current = null;
       api.saveNote(pending.id, pending.content).catch(() => {});
     }
 
-    // 后台拉取新便签内容，回来时如果用户已经又切走了就丢弃
     api
       .getNoteContent(id)
       .then((content) => {
@@ -253,7 +264,7 @@ export function NotesView({ language }: NotesViewProps) {
         }
       })
       .catch(() => {});
-  }, [tree]);
+  }, []);
 
   // 展开父目录链（子项多时整树重绘较重，用 transition 避免卡死主线程上的其它交互）
   const expandParents = useCallback((parent: string) => {
@@ -335,7 +346,14 @@ export function NotesView({ language }: NotesViewProps) {
         if (target.kind === "note") {
           const updated = await api.renameNote(target.key, trimmed);
           await loadTree();
-          if (activeId === target.key) setActiveId(updated.id);
+          if (activeId === target.key) {
+            setActiveId(updated.id);
+            // editorPayload.id 同步到新 id（内容不变,仅路径变了)；否则下方编辑器
+            // 因 editorPayload.id !== activeMeta.id 一直显示 loading 蒙层
+            setEditorPayload((prev) =>
+              prev && prev.id === target.key ? { ...prev, id: updated.id } : prev
+            );
+          }
         } else {
           const oldPath = target.key;
           const newPath = await api.renameFolder(oldPath, trimmed);
@@ -352,6 +370,14 @@ export function NotesView({ language }: NotesViewProps) {
           });
           if (activeId && (activeId === oldPath || activeId.startsWith(oldPath + "/"))) {
             setActiveId(newPath + activeId.substring(oldPath.length));
+            // 文件夹改名后,激活便签的 id 前缀也变了；同步 editorPayload 避免 loading 蒙层卡住
+            setEditorPayload((prev) => {
+              if (!prev) return prev;
+              if (prev.id === oldPath || prev.id.startsWith(oldPath + "/")) {
+                return { ...prev, id: newPath + prev.id.substring(oldPath.length) };
+              }
+              return prev;
+            });
           }
         }
       } catch (err) {
@@ -383,35 +409,31 @@ export function NotesView({ language }: NotesViewProps) {
     });
   }, []);
 
-  // 自动保存
-  // 只更新 activeMeta 的元数据，不触发 setTree 重建整棵侧栏树。
-  // 侧栏 title 在用户切换便签或显式操作（创建/删除/重命名/移动）时统一刷新。
+  // 自动保存：写盘后 loadTree 刷新索引与侧栏；activeMeta 随 tree 自动一致
+  // noteId 由编辑器闭包带过来 — 快速切便签也不会把 A 的内容写到 B
   const handleContentChange = useCallback(
-    async (markdown: string) => {
-      if (!activeId) return;
+    async (id: string, markdown: string) => {
       try {
-        const updated = await api.saveNote(activeId, markdown);
-        setActiveMeta(updated);
-        setLastSavedAt(new Date().toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US"));
-        // debounce 已 fire，清掉 pending 避免下次切换重复保存
-        if (pendingContentRef.current?.id === activeId) {
+        await api.saveNote(id, markdown);
+        if (id === activeIdRef.current) {
+          setLastSavedAt(new Date().toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US"));
+        }
+        if (pendingContentRef.current?.id === id) {
           pendingContentRef.current = null;
         }
+        startTransition(() => {
+          void loadTree();
+        });
       } catch {
         // 静默
       }
     },
-    [activeId, language]
+    [language, loadTree]
   );
 
-  // 编辑器每次输入都上报（不 debounce），父端用 ref 暂存
-  const handlePendingChange = useCallback(
-    (markdown: string) => {
-      if (!activeId) return;
-      pendingContentRef.current = { id: activeId, content: markdown };
-    },
-    [activeId]
-  );
+  const handlePendingChange = useCallback((id: string, markdown: string) => {
+    pendingContentRef.current = { id, content: markdown };
+  }, []);
 
   // 右键菜单
   const handleContextMenu = useCallback((e: React.MouseEvent, node: NoteTreeNode | null) => {
@@ -445,6 +467,7 @@ export function NotesView({ language }: NotesViewProps) {
       try {
         if (node.type === "note") {
           await api.deleteNote(node.id);
+          dropEditorCache(node.id);
           if (activeId === node.id) {
             selectionTokenRef.current = null;
             setActiveId(null);
@@ -452,7 +475,9 @@ export function NotesView({ language }: NotesViewProps) {
           }
         } else {
           await api.deleteFolder(node.path);
+          // 文件夹下的便签缓存条目暂时留存,会被后续 LRU 自然淘汰,不影响功能
           if (activeId && activeId.startsWith(node.path + "/")) {
+            dropEditorCache(activeId);
             selectionTokenRef.current = null;
             setActiveId(null);
             setEditorPayload(null);
@@ -635,7 +660,6 @@ export function NotesView({ language }: NotesViewProps) {
           ) : (
             <NoteTree
               nodes={tree}
-              activeId={activeId}
               expandedPaths={expandedPaths}
               onSelect={selectNote}
               onToggleFolder={toggleFolder}
@@ -758,15 +782,21 @@ export function NotesView({ language }: NotesViewProps) {
                 resetKey={editorPayload?.id ?? activeMeta.id}
                 fallbackText={language === "zh" ? "编辑器临时出错" : "Editor crashed"}
               >
-                <NoteEditor
-                  noteId={editorPayload?.id ?? activeMeta.id}
-                  content={editorPayload?.content ?? ""}
-                  onContentChange={handleContentChange}
-                  onPendingChange={handlePendingChange}
-                  language={language}
-                  showOutline={outlineVisible}
-                  toolbarPinned={toolbarPinned}
-                />
+                {/* noteId/content 都跟 editorPayload —— 编辑器只在内容真正到位时才存在并 setValue,
+                    避免「先 setValue('') 再 setValue(内容)」的双重同步开销;
+                    Vditor 实例复用(无 key 强制重建),切换便签时 useLayoutEffect 走一次 setValue 即可。
+                    新内容到位前 .loading 蒙层会盖住编辑区,用户不会看到「上一篇内容残留」的混乱。 */}
+                {editorPayload ? (
+                  <NoteEditor
+                    noteId={editorPayload.id}
+                    content={editorPayload.content}
+                    onContentChange={handleContentChange}
+                    onPendingChange={handlePendingChange}
+                    language={language}
+                    showOutline={outlineVisible}
+                    toolbarPinned={toolbarPinned}
+                  />
+                ) : null}
               </EditorErrorBoundary>
             </div>
           </>

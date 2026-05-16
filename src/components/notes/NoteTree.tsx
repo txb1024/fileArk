@@ -8,7 +8,7 @@ import {
   Plus,
   FolderPlus,
 } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { NoteTreeNode, NoteFolderNode, NoteFileNode } from "../../types";
 
 /** 树内 inline 编辑请求：创建新文件夹（parent="" 表示根目录） */
@@ -25,9 +25,39 @@ export interface RenamingTarget {
   initialName: string;
 }
 
+// ── 外部 store：高亮态不走 props，只「真的被高亮 / 取消高亮」的两行会重渲染 ──────
+// 之前 activeId 作为 prop 顺着 NoteTree → FolderRow → NoteRow 一层层往下传，
+// 每次点击便签都让整棵子树 reconcile，对几百~上千个节点就是几十~几百 ms 的阻塞。
+// 现在改成：NotesView 写 store，NoteRow 用 useSyncExternalStore 选择性订阅，
+// 只有 snapshot（自己是否被选中）真的变了的行才会被 React 重渲染。
+const activeIdListeners = new Set<() => void>();
+let activeNoteIdValue: string | null = null;
+
+export const activeNoteIdStore = {
+  get: () => activeNoteIdValue,
+  set: (id: string | null) => {
+    if (activeNoteIdValue === id) return;
+    activeNoteIdValue = id;
+    for (const fn of activeIdListeners) fn();
+  },
+  subscribe: (fn: () => void) => {
+    activeIdListeners.add(fn);
+    return () => {
+      activeIdListeners.delete(fn);
+    };
+  },
+};
+
+function useIsActiveNote(noteId: string): boolean {
+  return useSyncExternalStore(
+    activeNoteIdStore.subscribe,
+    () => activeNoteIdValue === noteId,
+    () => false,
+  );
+}
+
 interface NoteTreeProps {
   nodes: NoteTreeNode[];
-  activeId: string | null;
   expandedPaths: Set<string>;
   onSelect: (id: string) => void;
   onToggleFolder: (path: string) => void;
@@ -54,7 +84,23 @@ interface NoteTreeProps {
 }
 
 function NoteTreeBase(props: NoteTreeProps) {
-  const { nodes, depth = 0, pendingFolder } = props;
+  const {
+    nodes,
+    depth = 0,
+    expandedPaths,
+    pendingFolder,
+    renamingTarget,
+    onSelect,
+    onToggleFolder,
+    onCreateChild,
+    onContextMenu,
+    onRequestRename,
+    onSubmitFolder,
+    onCancelFolder,
+    onSubmitRename,
+    onCancelRename,
+    language,
+  } = props;
   const showRootPending = depth === 0 && pendingFolder?.parent === "";
   if (nodes.length === 0 && depth === 0 && !showRootPending) return null;
   return (
@@ -63,23 +109,65 @@ function NoteTreeBase(props: NoteTreeProps) {
         <InlineFolderInput
           parent=""
           depth={0}
-          onSubmit={props.onSubmitFolder}
-          onCancel={props.onCancelFolder}
-          language={props.language}
+          onSubmit={onSubmitFolder}
+          onCancel={onCancelFolder}
+          language={language}
         />
       )}
-      {nodes.map((node) => (
-        <NoteTreeItem key={getKey(node)} node={node} depth={depth} {...props} />
-      ))}
+      {nodes.map((node) => {
+        if (node.type === "folder") {
+          const expanded = expandedPaths.has(node.path);
+          const isRenaming =
+            renamingTarget?.kind === "folder" && renamingTarget.key === node.path;
+          const childPendingActive = pendingFolder?.parent === node.path;
+          return (
+            <FolderRow
+              key={`f:${node.path}`}
+              node={node}
+              depth={depth}
+              expanded={expanded}
+              isRenaming={isRenaming}
+              renamingInitialName={isRenaming ? renamingTarget!.initialName : ""}
+              childPendingActive={childPendingActive}
+              // 用于子树递归（仅展开时才会真正用到）
+              expandedPaths={expandedPaths}
+              renamingTarget={renamingTarget}
+              pendingFolder={pendingFolder}
+              onSelect={onSelect}
+              onToggleFolder={onToggleFolder}
+              onCreateChild={onCreateChild}
+              onContextMenu={onContextMenu}
+              onRequestRename={onRequestRename}
+              onSubmitFolder={onSubmitFolder}
+              onCancelFolder={onCancelFolder}
+              onSubmitRename={onSubmitRename}
+              onCancelRename={onCancelRename}
+              language={language}
+            />
+          );
+        }
+        const isRenaming =
+          renamingTarget?.kind === "note" && renamingTarget.key === node.id;
+        return (
+          <NoteRow
+            key={`n:${node.id}`}
+            node={node}
+            depth={depth}
+            isRenaming={isRenaming}
+            renamingInitialName={isRenaming ? renamingTarget!.initialName : ""}
+            onSelect={onSelect}
+            onContextMenu={onContextMenu}
+            onRequestRename={onRequestRename}
+            onSubmitRename={onSubmitRename}
+            onCancelRename={onCancelRename}
+          />
+        );
+      })}
     </div>
   );
 }
 
 export const NoteTree = memo(NoteTreeBase);
-
-function getKey(node: NoteTreeNode): string {
-  return node.type === "folder" ? `f:${node.path}` : `n:${node.id}`;
-}
 
 /** 超过此数量时延迟挂载子树，避免点击展开文件夹时主线程一次性协调/布局卡死 */
 const DEFER_CHILDREN_THRESHOLD = 200;
@@ -93,37 +181,51 @@ function scheduleIdleOrTimeout(run: () => void, timeoutMs: number): () => void {
   return () => clearTimeout(id);
 }
 
-interface ItemProps extends NoteTreeProps {
-  node: NoteTreeNode;
+interface FolderRowProps {
+  node: NoteFolderNode;
   depth: number;
+  expanded: boolean;
+  isRenaming: boolean;
+  renamingInitialName: string;
+  childPendingActive: boolean;
+  expandedPaths: Set<string>;
+  renamingTarget: RenamingTarget | null;
+  pendingFolder: PendingFolder | null;
+  onSelect: (id: string) => void;
+  onToggleFolder: (path: string) => void;
+  onCreateChild: (parent: string, kind: "note" | "folder") => void;
+  onContextMenu: (e: React.MouseEvent, node: NoteTreeNode) => void;
+  onRequestRename: (node: NoteTreeNode) => void;
+  onSubmitFolder: (parent: string, name: string) => void;
+  onCancelFolder: () => void;
+  onSubmitRename: (target: RenamingTarget, newName: string) => void;
+  onCancelRename: () => void;
+  language: "zh" | "en";
 }
 
-function NoteTreeItem(props: ItemProps) {
-  const { node, depth } = props;
-  if (node.type === "folder") return <FolderRow {...props} node={node} depth={depth} />;
-  return <NoteRow {...props} node={node} depth={depth} />;
-}
-
-function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
+const FolderRow = memo(function FolderRowInner(props: FolderRowProps) {
   const {
     node,
     depth,
+    expanded,
+    isRenaming,
+    renamingInitialName,
+    childPendingActive,
     expandedPaths,
+    renamingTarget,
+    pendingFolder,
+    onSelect,
     onToggleFolder,
     onCreateChild,
     onContextMenu,
     onRequestRename,
-    pendingFolder,
-    renamingTarget,
     onSubmitFolder,
     onCancelFolder,
     onSubmitRename,
     onCancelRename,
     language,
   } = props;
-  const expanded = expandedPaths.has(node.path);
-  const isRenaming = renamingTarget?.kind === "folder" && renamingTarget.key === node.path;
-  const showChildPending = expanded && pendingFolder?.parent === node.path;
+  const showChildPending = expanded && childPendingActive;
   const childCount = node.children.length;
   const [deferredChildrenReady, setDeferredChildrenReady] = useState(false);
 
@@ -180,8 +282,13 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
         )}
         {isRenaming ? (
           <InlineNameInput
-            initialValue={renamingTarget.initialName}
-            onSubmit={(name) => onSubmitRename(renamingTarget, name)}
+            initialValue={renamingInitialName}
+            onSubmit={(name) =>
+              onSubmitRename(
+                { key: node.path, kind: "folder", initialName: renamingInitialName },
+                name,
+              )
+            }
             onCancel={onCancelRename}
           />
         ) : (
@@ -235,7 +342,23 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
             />
           )}
           {childCount > 0 && showNestedTree && (
-            <NoteTree {...props} nodes={node.children} depth={depth + 1} />
+            <NoteTree
+              nodes={node.children}
+              depth={depth + 1}
+              expandedPaths={expandedPaths}
+              renamingTarget={renamingTarget}
+              pendingFolder={pendingFolder}
+              onSelect={onSelect}
+              onToggleFolder={onToggleFolder}
+              onCreateChild={onCreateChild}
+              onContextMenu={onContextMenu}
+              onRequestRename={onRequestRename}
+              onSubmitFolder={onSubmitFolder}
+              onCancelFolder={onCancelFolder}
+              onSubmitRename={onSubmitRename}
+              onCancelRename={onCancelRename}
+              language={language}
+            />
           )}
           {childCount > 0 && expanded && !showNestedTree && (
             <div
@@ -251,22 +374,34 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
       )}
     </>
   );
+});
+
+interface NoteRowProps {
+  node: NoteFileNode;
+  depth: number;
+  isRenaming: boolean;
+  renamingInitialName: string;
+  onSelect: (id: string) => void;
+  onContextMenu: (e: React.MouseEvent, node: NoteTreeNode) => void;
+  onRequestRename: (node: NoteTreeNode) => void;
+  onSubmitRename: (target: RenamingTarget, newName: string) => void;
+  onCancelRename: () => void;
 }
 
-function NoteRowBase(props: ItemProps & { node: NoteFileNode }) {
+const NoteRow = memo(function NoteRowInner(props: NoteRowProps) {
   const {
     node,
     depth,
-    activeId,
+    isRenaming,
+    renamingInitialName,
     onSelect,
     onContextMenu,
     onRequestRename,
-    renamingTarget,
     onSubmitRename,
     onCancelRename,
   } = props;
-  const active = activeId === node.id;
-  const isRenaming = renamingTarget?.kind === "note" && renamingTarget.key === node.id;
+  // 只有「自己被选中 / 取消选中」时才重渲染——activeId 不再走 props
+  const active = useIsActiveNote(node.id);
 
   return (
     <div
@@ -286,8 +421,13 @@ function NoteRowBase(props: ItemProps & { node: NoteFileNode }) {
       <FileText size={13} className="note-tree-icon" />
       {isRenaming ? (
         <InlineNameInput
-          initialValue={renamingTarget.initialName}
-          onSubmit={(name) => onSubmitRename(renamingTarget, name)}
+          initialValue={renamingInitialName}
+          onSubmit={(name) =>
+            onSubmitRename(
+              { key: node.id, kind: "note", initialName: renamingInitialName },
+              name,
+            )
+          }
           onCancel={onCancelRename}
         />
       ) : (
@@ -305,26 +445,6 @@ function NoteRowBase(props: ItemProps & { node: NoteFileNode }) {
       {!isRenaming && node.pinned && <Pin size={10} className="note-tree-pin" />}
     </div>
   );
-}
-
-/**
- * 叶子节点级 memo:折叠/展开文件夹时,setExpandedPaths 产生新 Set,
- * 整个 NoteTree 默认会一路重渲染到所有 NoteRow。这里精确比较真正影响
- * NoteRow 的 4 个状态(node 引用、depth、active、是否在 rename),其余
- * callback / 全局 state 引用变化都跳过。
- */
-const NoteRow = memo(NoteRowBase, (prev, next) => {
-  if (prev.node !== next.node) return false;
-  if (prev.depth !== next.depth) return false;
-  const prevActive = prev.activeId === prev.node.id;
-  const nextActive = next.activeId === next.node.id;
-  if (prevActive !== nextActive) return false;
-  const prevRenaming =
-    prev.renamingTarget?.kind === "note" && prev.renamingTarget.key === prev.node.id;
-  const nextRenaming =
-    next.renamingTarget?.kind === "note" && next.renamingTarget.key === next.node.id;
-  if (prevRenaming !== nextRenaming) return false;
-  return true;
 });
 
 /** 创建文件夹的 inline 输入行（带文件夹图标 + 缩进，对齐普通 FolderRow） */

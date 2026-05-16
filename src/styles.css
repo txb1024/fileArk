@@ -3762,9 +3762,6 @@ input {
 }
 
 .note-tree-row {
-  /* 长侧栏列表：跳过视口外行的布局/绘制，减轻展开大文件夹时的主线程压力 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 32px;
   display: flex;
   align-items: center;
   gap: 5px;
