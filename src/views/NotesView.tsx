@@ -11,7 +11,6 @@ import {
   Minimize2,
   PanelRight,
   PanelRightClose,
-  Pin as PinIcon,
   PinOff,
   FolderPlus,
   Pin,
@@ -21,7 +20,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
-import { NoteEditor, dropEditorCache } from "../components/notes/NoteEditor";
+import { NoteEditor, dropEditorCache, renameEditorCache } from "../components/notes/NoteEditor";
 import {
   NoteTree,
   activeNoteIdStore,
@@ -182,7 +181,6 @@ export function NotesView({ language }: NotesViewProps) {
   const [confirmDelete, setConfirmDelete] = useState<NoteTreeNode | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [outlineVisible, setOutlineVisible] = useState(true);
-  const [toolbarPinned, setToolbarPinned] = useState(false);
 
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
     try {
@@ -345,6 +343,8 @@ export function NotesView({ language }: NotesViewProps) {
       try {
         if (target.kind === "note") {
           const updated = await api.renameNote(target.key, trimmed);
+          // 把缓存里的 Vditor 实例搬到新 id 下,光标位置与正文都保留
+          renameEditorCache(target.key, updated.id);
           await loadTree();
           if (activeId === target.key) {
             setActiveId(updated.id);
@@ -369,7 +369,10 @@ export function NotesView({ language }: NotesViewProps) {
             return next;
           });
           if (activeId && (activeId === oldPath || activeId.startsWith(oldPath + "/"))) {
-            setActiveId(newPath + activeId.substring(oldPath.length));
+            const newId = newPath + activeId.substring(oldPath.length);
+            // 当前活动便签的 id 前缀变了,搬运对应的 Vditor 缓存
+            renameEditorCache(activeId, newId);
+            setActiveId(newId);
             // 文件夹改名后,激活便签的 id 前缀也变了；同步 editorPayload 避免 loading 蒙层卡住
             setEditorPayload((prev) => {
               if (!prev) return prev;
@@ -742,21 +745,6 @@ export function NotesView({ language }: NotesViewProps) {
                 )}
                 <button
                   className="notes-focus-toggle"
-                  onClick={() => togglePin(activeMeta.id, activeMeta.pinned)}
-                  title={t.pinned}
-                  aria-label={t.pinned}
-                >
-                  <Pin size={14} className={activeMeta.pinned ? "pinned" : ""} />
-                </button>
-                <button
-                  className="notes-focus-toggle"
-                  onClick={() => setToolbarPinned((v) => !v)}
-                  title={toolbarPinned ? t.unpinToolbar : t.pinToolbar}
-                >
-                  {toolbarPinned ? <PinOff size={14} /> : <PinIcon size={14} />}
-                </button>
-                <button
-                  className="notes-focus-toggle"
                   onClick={() => setOutlineVisible((v) => !v)}
                   title={outlineVisible ? t.hideOutline : t.showOutline}
                 >
@@ -794,7 +782,6 @@ export function NotesView({ language }: NotesViewProps) {
                     onPendingChange={handlePendingChange}
                     language={language}
                     showOutline={outlineVisible}
-                    toolbarPinned={toolbarPinned}
                   />
                 ) : null}
               </EditorErrorBoundary>

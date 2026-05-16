@@ -531,6 +531,10 @@ nav {
   flex-direction: column;
   min-width: 0;
   height: 100vh;
+  /* 关键：阻止 main 被内容撑出 100vh 进而让整窗滚动；
+     内部视图(如便签编辑器)若需要滚动应在自身容器里启用 overflow:auto */
+  overflow: hidden;
+  min-height: 0;
 }
 
 .topbar {
@@ -4394,6 +4398,9 @@ input {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* flex 列方向的子项默认 min-height: auto, 会被内容撑高;
+     这里压成 0 才能让 .notes-editor-content 真正受 flex:1 约束去滚动 */
+  min-height: 0;
   background: var(--surface);
 }
 
@@ -4438,6 +4445,9 @@ input {
   overflow-y: auto;
   padding: 0;
   position: relative;
+  /* 同 .notes-editor-area: flex 列子项必须能收缩到内容以下,
+     否则 overflow-y:auto 永远不触发,正文会把整条 flex 链一路撑爆到外层 */
+  min-height: 0;
 }
 
 /* 切换便签时（内容尚未拉到 / vditor 还在 setValue）显示 shimmer 占位，
@@ -4467,12 +4477,23 @@ input {
 
 /* Vditor 编辑器样式适配（Typora 级体验） */
 
+/* 多实例容器根 — NoteEditor 在这里挂载/切换每个便签的独立 .note-vditor.
+   每个 .note-vditor 都 height:100%，但同时只有当前活动的 display 不为 none，
+   所以多个共存也不会撑高父容器或互相重叠。 */
+.note-vditor-root {
+  position: relative;
+  height: 100%;
+}
+
 /* 编辑器容器 — 作为工具栏悬浮锚点 */
 .note-vditor {
   height: 100%;
-  min-height: 100%;
+  /* 之前是 min-height:100%, 会让 Vditor 内容超过视口时把 .notes-editor-content
+     一路撑爆,溢出到 .main 再到 body,表现为整窗可上下滑动。
+     现在严格 height:100%, 滚动交给 Vditor 自身的 .vditor-ir__list 处理 */
   border: none;
   position: relative;
+  overflow: hidden;
 }
 
 /* Vditor 主体无边框、无圆角，融入编辑区 */
@@ -4491,7 +4512,10 @@ input {
   right: 0 !important;
   z-index: 50;
   background: var(--surface) !important;
-  padding: 6px 12px !important;
+  /* 工具栏高度收紧：原本上下 6px + 图标按钮 32px = 总高 ~46px，太厚遮挡正文。
+     收到 2px 后整体约 32px，更接近 Typora。 */
+  padding: 2px 12px !important;
+  min-height: 32px !important;
   border-bottom: 1px solid var(--border) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
   opacity: 0;
@@ -4583,6 +4607,17 @@ input {
   color: var(--muted) !important;
   border-radius: var(--radius-sm) !important;
   transition: background 0.15s, color 0.15s !important;
+  /* 收紧按钮内边距，让整条工具栏更轻量 */
+  padding: 2px 4px !important;
+  height: 26px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+.notes-editor-content .vditor-toolbar .vditor-toolbar__item svg {
+  width: 14px !important;
+  height: 14px !important;
 }
 
 .notes-editor-content .vditor-toolbar .vditor-toolbar__item:hover {

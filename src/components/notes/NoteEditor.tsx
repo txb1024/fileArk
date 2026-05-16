@@ -16,8 +16,6 @@ interface NoteEditorProps {
   language: "zh" | "en";
   /** 是否显示大纲面板 */
   showOutline?: boolean;
-  /** 工具栏固定（控制顶部工具栏是否常驻） */
-  toolbarPinned?: boolean;
 }
 
 const AUTOSAVE_DELAY = 600;
@@ -115,9 +113,9 @@ function applyThemeTo(vditor: Vditor) {
   else vditor.setTheme("classic", "classic", "github");
 }
 
-function buildContainerClass(showOutline: boolean, toolbarPinned: boolean): string {
-  const cls = ["note-vditor", "toolbar-visible"];
-  if (toolbarPinned) cls.push("toolbar-pinned");
+function buildContainerClass(showOutline: boolean): string {
+  // 工具栏永远 pin 在顶部（去掉了让用户切换的按钮，现在统一固定显示）
+  const cls = ["note-vditor", "toolbar-visible", "toolbar-pinned"];
   if (!showOutline) cls.push("no-outline");
   return cls.join(" ");
 }
@@ -128,6 +126,22 @@ export function dropEditorCache(noteId: string) {
   if (!entry) return;
   editorsCache.delete(noteId);
   destroyEntry(entry);
+}
+
+/** 外部 API：重命名便签时，把现有的 Vditor 实例搬到新 id 下，保留正文 + 光标位置 */
+export function renameEditorCache(oldId: string, newId: string) {
+  if (oldId === newId) return;
+  const entry = editorsCache.get(oldId);
+  if (!entry) return;
+  editorsCache.delete(oldId);
+  // 若新 id 已存在缓存（极少见，比如先建后删再建同名），先销毁旧的
+  const collision = editorsCache.get(newId);
+  if (collision) {
+    editorsCache.delete(newId);
+    destroyEntry(collision);
+  }
+  entry.noteId = newId;
+  editorsCache.set(newId, entry);
 }
 
 /**
@@ -151,7 +165,6 @@ function NoteEditorBase({
   onPendingChange,
   language,
   showOutline = true,
-  toolbarPinned = false,
 }: NoteEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onContentChangeRef = useRef(onContentChange);
@@ -218,7 +231,7 @@ function NoteEditorBase({
 
     // 缓存未命中：新建实例
     const container = document.createElement("div");
-    container.className = buildContainerClass(showOutline, toolbarPinned);
+    container.className = buildContainerClass(showOutline);
     container.classList.add("editor-busy");
     root.appendChild(container);
 
@@ -343,16 +356,15 @@ function NoteEditorBase({
     });
     newEntry.vditor = vditor;
     evictIfNeeded(noteId);
-  }, [noteId, content, language, showOutline, toolbarPinned]);
+  }, [noteId, content, language, showOutline]);
 
-  // showOutline / toolbarPinned 切换：同步到所有缓存容器的 class
+  // showOutline 切换：同步到所有缓存容器的 class
   // （非当前实例也要更新，避免之后切回去时样式错位）
   useEffect(() => {
     for (const entry of editorsCache.values()) {
       entry.container.classList.toggle("no-outline", !showOutline);
-      entry.container.classList.toggle("toolbar-pinned", toolbarPinned);
     }
-  }, [showOutline, toolbarPinned]);
+  }, [showOutline]);
 
   // 主题切换：观察 .app-shell class 变化，挨个给已就绪的实例调 setTheme
   useEffect(() => {
@@ -386,6 +398,5 @@ export const NoteEditor = memo(
     prev.noteId === next.noteId &&
     prev.content === next.content &&
     prev.language === next.language &&
-    prev.showOutline === next.showOutline &&
-    prev.toolbarPinned === next.toolbarPinned,
+    prev.showOutline === next.showOutline,
 );
