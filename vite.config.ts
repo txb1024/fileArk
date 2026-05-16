@@ -3,6 +3,18 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
+  optimizeDeps: {
+    include: [
+      "@blocknote/core",
+      "@blocknote/react",
+      "@blocknote/mantine",
+      "@mantine/core",
+      "@mantine/hooks",
+    ],
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

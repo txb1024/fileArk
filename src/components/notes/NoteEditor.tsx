@@ -1,58 +1,76 @@
-import { memo, useEffect, useLayoutEffect, useRef } from "react";
-import Vditor from "vditor";
-import "vditor/dist/index.css";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  useCreateBlockNote,
+  SuggestionMenuController,
+  getDefaultReactSlashMenuItems,
+  getPageBreakReactSlashMenuItems,
+  type DefaultReactSuggestionItem,
+} from "@blocknote/react";
+import { BlockNoteView } from "@blocknote/mantine";
+import {
+  BlockNoteSchema,
+  filterSuggestionItems,
+  withPageBreak,
+  type PartialBlock,
+} from "@blocknote/core";
+import { en } from "@blocknote/core/locales";
+import "@blocknote/core/fonts/inter.css";
+import "@blocknote/mantine/style.css";
 import { api } from "../../api";
+import { NoteOutline } from "./NoteOutline";
+import { activeNoteEditorStore } from "./activeNoteEditorStore";
 
 interface NoteEditorProps {
-  /** 当前便签 id */
+  /** 当前便签 id (后缀 .bnote 或 .md;.md 表示老格式,内容是 markdown 文本) */
   noteId: string;
-  /** 该便签的正文（首次加载时的快照） */
+  /** 该便签的正文(.bnote → JSON 字符串;.md → markdown 文本) */
   content: string;
-  /** 回写盘（debounce 后调用），明确带 noteId — 防止快速切换便签时把 A 的内容写到 B */
-  onContentChange: (noteId: string, markdown: string) => void;
-  /** 立即上报每次编辑（不 debounce），父组件用 ref 暂存，切换便签前 flush */
-  onPendingChange?: (noteId: string, markdown: string) => void;
+  /** 回写盘(debounce 后调用),明确带 noteId 防止快速切换便签时把 A 的内容写到 B */
+  onContentChange: (noteId: string, content: string) => void;
+  /** 立即上报每次编辑(不 debounce),父组件用 ref 暂存,切换便签前 flush */
+  onPendingChange?: (noteId: string, content: string) => void;
   language: "zh" | "en";
-  /** 是否显示大纲面板 */
+  /** 是否显示大纲面板(暂时占位,BlockNote 没有原生 outline,后期可加自定义) */
   showOutline?: boolean;
 }
 
 const AUTOSAVE_DELAY = 600;
-/** 缓存中最多保留的 Vditor 实例数；超过会按 LRU 顺序销毁最旧的 */
-const MAX_INSTANCES = 12;
-/** NoteEditor 卸载后延迟销毁缓存的时长（ms）。
- *  目的：StrictMode dev 下 mount→unmount→mount 几乎是同帧的，
- *  这点延迟内若 NoteEditor 又挂回来，就取消销毁、整组实例存活，避免无谓重建。 */
-const CLEANUP_DELAY = 100;
 
-interface EditorEntry {
-  noteId: string;
-  /** 实际承载 vditor 的 div；不交给 React 管理，避免 React reconcile 时把它的 DOM 子树拍掉 */
-  container: HTMLDivElement;
-  vditor: Vditor | null;
-  /** Vditor after 回调触发后才置 true；destroy 必须在此之后才安全 */
-  ready: boolean;
-  /** 我们认为编辑器里现在显示的内容（input 回调与外部 setValue 都会更新它） */
-  contentSnapshot: string;
-  /** 若 ready 前接到了 setValue 请求，先缓存到这里，after 回调里消费 */
-  pendingContent: string | null;
-  /** autosave 防抖 timer */
-  debounceTimer: ReturnType<typeof setTimeout> | null;
-  /** 守卫：我们自己触发的 setValue 不应被当作用户编辑回传给父组件 */
-  isSettingValue: boolean;
-  /** 监听容器内代码块变化，自动给每个 <pre> 注入复制按钮 */
-  codeObserver: MutationObserver | null;
-  /** 注入复制按钮的防抖 timer */
-  enhanceTimer: ReturnType<typeof setTimeout> | null;
-}
+const EMPTY_DOC: PartialBlock[] = [{ type: "paragraph", content: [] }];
 
-// ── 模块级缓存：跨 NoteEditor 重挂载存活 ──────────────────────────────────
-// React StrictMode dev 下 NoteEditor 第一次 mount 会被 unmount→remount 一次。
-// 若把缓存放在 useRef 里，第二次 mount 会拿到新 ref（空缓存），等于第一个 Vditor 白建。
-// 放模块级，再配合「卸载延迟销毁 + 重挂前取消」，就能完美兜住 StrictMode 双挂载。
-const editorsCache = new Map<string, EditorEntry>();
-let cleanupTimer: number | null = null;
+/** BlockNote 0.50 默认 schema + PageBreak 扩展 */
+const SCHEMA = withPageBreak(BlockNoteSchema.create());
+
+/** BlockNote 默认 schema + PageBreak 支持的块类型 */
+const KNOWN_BLOCK_TYPES = new Set([
+  "paragraph",
+  "heading",
+  "bulletListItem",
+  "numberedListItem",
+  "checkListItem",
+  "codeBlock",
+  "quote",
+  "toggleListItem",
+  "table",
+  "image",
+  "video",
+  "audio",
+  "file",
+  "divider",
+  "pageBreak",
+]);
+
+const INLINE_BLOCK_TYPES = new Set([
+  "paragraph",
+  "heading",
+  "bulletListItem",
+  "numberedListItem",
+  "checkListItem",
+  "codeBlock",
+  "quote",
+  "toggleListItem",
+]);
 
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -67,401 +85,408 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
-function destroyEntry(entry: EditorEntry) {
-  if (entry.debounceTimer) {
-    clearTimeout(entry.debounceTimer);
-    entry.debounceTimer = null;
-  }
-  if (entry.enhanceTimer) {
-    clearTimeout(entry.enhanceTimer);
-    entry.enhanceTimer = null;
-  }
-  if (entry.codeObserver) {
-    entry.codeObserver.disconnect();
-    entry.codeObserver = null;
-  }
-  if (entry.ready && entry.vditor) {
-    try {
-      entry.vditor.destroy();
-    } catch {
-      // ready 标记下 destroy 内部偶发 race，吞掉，下面 container.remove 会清干净 DOM
+/** 规范化行内内容,避免非法结构触发 ProseMirror renderSpec 错误 */
+function sanitizeInlineContent(raw: unknown): PartialBlock["content"] {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw === "string") return raw;
+  if (!Array.isArray(raw)) return [];
+
+  const out: Array<Record<string, unknown> | string> = [];
+  for (const item of raw) {
+    if (typeof item === "string") {
+      if (item.length > 0) out.push(item);
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    if (obj.type === "text" && typeof obj.text === "string") {
+      // ProseMirror 不允许空 text node,过滤掉 text="" 的项,否则触发 invariant
+      if (obj.text.length === 0) continue;
+      out.push({
+        type: "text",
+        text: obj.text,
+        styles:
+          obj.styles && typeof obj.styles === "object"
+            ? (obj.styles as Record<string, boolean>)
+            : {},
+      });
+      continue;
+    }
+    if (obj.type === "link" && typeof obj.href === "string") {
+      const nested = sanitizeInlineContent(obj.content);
+      const nestedArr = Array.isArray(nested) ? nested : [];
+      if (nestedArr.length === 0 && typeof nested !== "string") continue;
+      out.push({
+        type: "link",
+        href: obj.href,
+        content:
+          typeof nested === "string"
+            ? nested
+            : (nestedArr as Array<Record<string, unknown> | string>),
+      });
     }
   }
-  entry.container.remove();
+  return out as PartialBlock["content"];
 }
 
-/** 给每个 <pre> 注入"复制"按钮（contenteditable=false，不会被 vditor 当作内容） */
-function enhanceCodeBlocks(root: HTMLElement) {
-  const pres = root.querySelectorAll<HTMLPreElement>("pre");
-  pres.forEach((pre) => {
-    if (pre.querySelector(":scope > .notes-codeblock-copy")) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "notes-codeblock-copy";
-    btn.contentEditable = "false";
-    btn.setAttribute("data-vditor-ignore", "true");
-    btn.textContent = "复制";
-    btn.addEventListener("mousedown", (e) => e.preventDefault());
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const code = pre.querySelector("code");
-      const text = code ? code.textContent ?? "" : pre.textContent ?? "";
-      navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          btn.textContent = "已复制";
-          btn.classList.add("copied");
-          window.setTimeout(() => {
-            btn.textContent = "复制";
-            btn.classList.remove("copied");
-          }, 1400);
-        })
-        .catch(() => {
-          btn.textContent = "失败";
-          window.setTimeout(() => (btn.textContent = "复制"), 1400);
-        });
-    });
-    pre.appendChild(btn);
-  });
-}
+function sanitizeBlock(raw: unknown): PartialBlock | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.type !== "string") return null;
 
-function startCodeObserver(entry: EditorEntry) {
-  if (entry.codeObserver) return;
-  const obs = new MutationObserver(() => {
-    if (entry.enhanceTimer) clearTimeout(entry.enhanceTimer);
-    entry.enhanceTimer = setTimeout(() => {
-      entry.enhanceTimer = null;
-      enhanceCodeBlocks(entry.container);
-    }, 60);
-  });
-  obs.observe(entry.container, { childList: true, subtree: true });
-  entry.codeObserver = obs;
-  enhanceCodeBlocks(entry.container);
-}
+  let type = obj.type;
+  if (!KNOWN_BLOCK_TYPES.has(type)) {
+    type = "paragraph";
+  }
 
-function destroyAll() {
-  for (const entry of editorsCache.values()) destroyEntry(entry);
-  editorsCache.clear();
-}
+  const out: Record<string, unknown> = { type };
+  if (typeof obj.id === "string") out.id = obj.id;
 
-function touchLRU(noteId: string) {
-  const e = editorsCache.get(noteId);
-  if (!e) return;
-  editorsCache.delete(noteId);
-  editorsCache.set(noteId, e);
-}
+  if (INLINE_BLOCK_TYPES.has(type)) {
+    out.content = sanitizeInlineContent(obj.content);
+  } else if (type === "table" && Array.isArray(obj.content)) {
+    out.content = obj.content;
+  }
 
-function evictIfNeeded(activeNoteId: string) {
-  while (editorsCache.size > MAX_INSTANCES) {
-    // Map 按插入顺序迭代；touchLRU 已经把当前活动的挪到了末尾，所以从头取就是「最久没用」
-    let oldest: string | null = null;
-    for (const key of editorsCache.keys()) {
-      if (key !== activeNoteId) {
-        oldest = key;
-        break;
-      }
+  if (Array.isArray(obj.children)) {
+    const kids = obj.children
+      .map((c) => sanitizeBlock(c))
+      .filter((c): c is PartialBlock => c !== null);
+    if (kids.length > 0) out.children = kids;
+  }
+
+  if (obj.props && typeof obj.props === "object") {
+    const srcProps = obj.props as Record<string, unknown>;
+    const safeProps: Record<string, unknown> = {};
+    if (typeof srcProps.level === "number") {
+      const lv = srcProps.level;
+      safeProps.level = lv >= 1 && lv <= 6 ? lv : 1;
     }
-    if (!oldest) break;
-    const e = editorsCache.get(oldest)!;
-    editorsCache.delete(oldest);
-    destroyEntry(e);
+    if (typeof srcProps.checked === "boolean") safeProps.checked = srcProps.checked;
+    if (typeof srcProps.language === "string") safeProps.language = srcProps.language;
+    if (typeof srcProps.textAlignment === "string") {
+      safeProps.textAlignment = srcProps.textAlignment;
+    }
+    if (typeof srcProps.url === "string") safeProps.url = srcProps.url;
+    if (typeof srcProps.name === "string") safeProps.name = srcProps.name;
+    if (typeof srcProps.caption === "string") safeProps.caption = srcProps.caption;
+    if (Object.keys(safeProps).length > 0) out.props = safeProps;
+  }
+
+  return out as PartialBlock;
+}
+
+function parseInitialBnote(content: string): PartialBlock[] {
+  const trimmed = content.trim();
+  if (!trimmed) return EMPTY_DOC;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed) || parsed.length === 0) return EMPTY_DOC;
+    const cleaned = parsed
+      .map((b) => sanitizeBlock(b))
+      .filter((b): b is PartialBlock => b !== null);
+    return cleaned.length > 0 ? cleaned : EMPTY_DOC;
+  } catch (err) {
+    console.warn("[NoteEditor] parseInitialBnote failed, using empty doc:", err);
+    return EMPTY_DOC;
   }
 }
 
-function applyThemeTo(vditor: Vditor) {
-  const isDark = !!document.querySelector(".app-shell")?.classList.contains("theme-dark");
-  if (isDark) vditor.setTheme("dark", "dark", "dracula");
-  else vditor.setTheme("classic", "classic", "github");
+function detectIsDark(): boolean {
+  return document.querySelector(".app-shell")?.classList.contains("theme-dark") ?? false;
 }
 
-function buildContainerClass(showOutline: boolean): string {
-  // 工具栏永远 pin 在顶部（去掉了让用户切换的按钮，现在统一固定显示）
-  const cls = ["note-vditor", "toolbar-visible", "toolbar-pinned"];
-  if (!showOutline) cls.push("no-outline");
-  return cls.join(" ");
-}
-
-/** 外部 API：当便签被删除 / 改名时，把对应缓存条目销毁，避免占用配额与陈旧实例 */
-export function dropEditorCache(noteId: string) {
-  const entry = editorsCache.get(noteId);
-  if (!entry) return;
-  editorsCache.delete(noteId);
-  destroyEntry(entry);
-}
-
-/** 外部 API：重命名便签时，把现有的 Vditor 实例搬到新 id 下，保留正文 + 光标位置 */
-export function renameEditorCache(oldId: string, newId: string) {
-  if (oldId === newId) return;
-  const entry = editorsCache.get(oldId);
-  if (!entry) return;
-  editorsCache.delete(oldId);
-  // 若新 id 已存在缓存（极少见，比如先建后删再建同名），先销毁旧的
-  const collision = editorsCache.get(newId);
-  if (collision) {
-    editorsCache.delete(newId);
-    destroyEntry(collision);
-  }
-  entry.noteId = newId;
-  editorsCache.set(newId, entry);
-}
-
-/**
- * Markdown 编辑器（基于 Vditor，按便签 id 多实例缓存）。
- *
- * 解决「点击便签整个系统卡死」的核心思路：
- * - 每个便签 id 对应一个独立的 Vditor 实例 + DOM 容器，缓存在模块级 Map（最多 12 个）。
- * - 切换便签时不再走 setValue（这是之前主线程冻 1～2 秒的元凶），而是把当前容器
- *   display:none、目标容器 display:""，纯 CSS 切换，零阻塞，光标位置也自然保留。
- * - 首次访问某便签才会真正 new Vditor，Vditor 自身的初始化是异步的（async after 回调），
- *   主线程不会被一次性吃满；同时容器加 .editor-busy 渲染 shimmer 遮罩。
- * - LRU 淘汰最久未访问的实例，封顶内存。
- * - StrictMode dev 双挂载：cleanup 延迟 100ms 销毁缓存，下一次 mount 在窗口内取消销毁，
- *   缓存与 Vditor 实例完整存活，避免开发模式 1～2 秒的整窗冻结。
- * - 父组件不要给 NoteEditor 设 key，否则会强制销毁整个组件，带走整组缓存。
- */
 function NoteEditorBase({
   noteId,
   content,
   onContentChange,
   onPendingChange,
   language,
-  showOutline = true,
+  showOutline,
 }: NoteEditorProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
+  const isMarkdown = noteId.endsWith(".md");
+  const isLegacyMarkdownBody =
+    !isMarkdown && content.trim().length > 0 && !content.trim().startsWith("[");
+
   const onContentChangeRef = useRef(onContentChange);
   const onPendingChangeRef = useRef(onPendingChange);
-
-  // 始终持有最新回调引用，input 回调里读 ref 即可
   useEffect(() => {
     onContentChangeRef.current = onContentChange;
     onPendingChangeRef.current = onPendingChange;
   });
 
-  // 挂载/卸载：卸载时延迟销毁缓存；下一次 mount（StrictMode 重挂或正常切回）取消销毁
-  useEffect(() => {
-    if (cleanupTimer !== null) {
-      clearTimeout(cleanupTimer);
-      cleanupTimer = null;
-    }
-    return () => {
-      if (cleanupTimer !== null) clearTimeout(cleanupTimer);
-      cleanupTimer = window.setTimeout(() => {
-        cleanupTimer = null;
-        destroyAll();
-      }, CLEANUP_DELAY);
-    };
+  const [isDark, setIsDark] = useState<boolean>(detectIsDark);
+
+  const uploadFile = useCallback(async (file: File) => {
+    const ext =
+      file.name.includes(".") && file.name.split(".").pop()
+        ? file.name.split(".").pop()!
+        : "bin";
+    const data = await readFileAsBase64(file);
+    const absPath = await api.saveNoteAsset(data, ext);
+    return convertFileSrc(absPath);
   }, []);
 
-  // 切换便签的核心逻辑：
-  // 1) 隐藏所有非当前实例
-  // 2) 命中缓存 → 把容器塞回 root、display 切回；若外部 content 与快照不同（文件被外部改），setValue 同步
-  // 3) 未命中 → 新建容器 + new Vditor；shimmer 遮罩盖住直到 after 回调
-  useLayoutEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-
-    for (const [id, entry] of editorsCache) {
-      if (id !== noteId) entry.container.style.display = "none";
-    }
-
-    const existing = editorsCache.get(noteId);
-    if (existing) {
-      if (existing.container.parentElement !== root) {
-        root.appendChild(existing.container);
-      }
-      existing.container.style.display = "";
-
-      // 外部内容变化（如文件被其他进程改写）才更新；正常切换 content 等于 snapshot 直接跳过
-      if (existing.vditor && existing.contentSnapshot !== content) {
-        if (existing.ready) {
-          existing.isSettingValue = true;
-          try {
-            existing.vditor.setValue(content, true);
-            existing.vditor.clearStack();
-            existing.contentSnapshot = content;
-          } finally {
-            existing.isSettingValue = false;
+  const placeholders = useMemo(
+    () =>
+      language === "zh"
+        ? {
+            default: "输入 / 选择块",
+            emptyDocument: "输入 / 选择块,或直接开始写...",
+            heading: "标题",
+            bulletListItem: "列表项",
+            numberedListItem: "列表项",
+            checkListItem: "待办",
+            quote: "引用",
+            codeBlock: "代码",
           }
-        } else {
-          existing.pendingContent = content;
-        }
-      }
-      touchLRU(noteId);
-      return;
-    }
+        : {
+            default: "Type '/' for commands",
+            emptyDocument: "Type '/' for commands, or start writing...",
+            heading: "Heading",
+            bulletListItem: "List item",
+            numberedListItem: "List item",
+            checkListItem: "To-do",
+            quote: "Quote",
+            codeBlock: "Code",
+          },
+    [language],
+  );
 
-    // 缓存未命中：新建实例
-    const container = document.createElement("div");
-    container.className = buildContainerClass(showOutline);
-    container.classList.add("editor-busy");
-    root.appendChild(container);
+  // 显式传入 initialContent: EMPTY_DOC，避免 BlockNote 内部默认空文档
+  // 在某些版本下触发 ProseMirror toDOM 异常("Invalid array passed to renderSpec")。
+  // deps=[] 让 editor 在 NoteEditor 实例的整个生命周期内复用一次。父组件 key={noteId}
+  // 保证切换便签时整组件重建。
+  const editor = useCreateBlockNote(
+    {
+      uploadFile,
+      initialContent: EMPTY_DOC,
+      schema: SCHEMA,
+      placeholders,
+      // Slash 菜单始终用英文(zh 翻译质量一般,英文更紧凑)
+      dictionary: en,
+    },
+    [],
+  );
 
-    const newEntry: EditorEntry = {
-      noteId,
-      container,
-      vditor: null,
-      ready: false,
-      contentSnapshot: content,
-      pendingContent: null,
-      debounceTimer: null,
-      isSettingValue: false,
-      codeObserver: null,
-      enhanceTimer: null,
-    };
-    editorsCache.set(noteId, newEntry);
+  // 首次挂载后异步注入内容:.bnote 直接 replaceBlocks;.md / legacy markdown 走解析。
+  // 即使内容格式异常,错误也只发生在 replaceBlocks(已挂载完成的 editor 上),
+  // 不会让 BlockNoteView mount 失败 — 整体编辑器仍可用,最多看不到旧内容。
+  const injectedRef = useRef(false);
+  useEffect(() => {
+    if (injectedRef.current) return;
+    injectedRef.current = true;
 
-    // 注意：upload.handler 与 input/after 都会闭包引用 vditor 变量，
-    // 必须用 let 先声明，下面 new Vditor 后再赋值；构造期 vditor 还是 undefined，
-    // 但回调真正触发时已经初始化完了，所以安全。
-    let vditor!: Vditor;
-    vditor = new Vditor(container, {
-      // 关键：本地 /vditor 路径，避免去 unpkg 加载 lute.min.js / i18n / icons，
-      // 国内网络下走 unpkg 会让 Vditor 初始化卡住几秒。
-      cdn: `${location.origin}/vditor`,
-      mode: "ir",
-      value: content,
-      placeholder: language === "zh" ? "开始写点什么…" : "Start writing…",
-      lang: language === "zh" ? "zh_CN" : "en_US",
-      icon: "ant",
-      height: "100%",
-      minHeight: 400,
-      typewriterMode: false,
-      // outline 走 CSS 控制显隐（.note-vditor.no-outline .vditor-outline { display:none }），
-      // 这里恒开，避免运行时 enable 切换会触发 Vditor 内部重构造。
-      outline: { enable: true, position: "right" },
-      toolbar: [
-        "headings",
-        "bold",
-        "italic",
-        "strike",
-        "|",
-        "line",
-        "quote",
-        "list",
-        "ordered-list",
-        "check",
-        "|",
-        "code",
-        "inline-code",
-        "table",
-        "link",
-        "upload",
-        "|",
-        "undo",
-        "redo",
-        "|",
-        "outline",
-        "edit-mode",
-        "fullscreen",
-      ],
-      toolbarConfig: { pin: true },
-      cache: { enable: false },
-      counter: { enable: true, type: "markdown" },
-      preview: {
-        hljs: { style: "github", lineNumber: false },
-        math: { engine: "KaTeX" },
-      },
-      // 完全禁用 hint:emoji，避免 vditor 在空字典上调 setStart 抛 IndexSizeError
-      hint: { parse: false, delay: 200, emoji: {}, emojiPath: "", extend: [] },
-      upload: {
-        accept: "image/*",
-        multiple: true,
-        max: 20 * 1024 * 1024,
-        handler: (async (files: File[]): Promise<string | null> => {
-          try {
-            for (const file of files) {
-              const ext = file.name.includes(".")
-                ? file.name.split(".").pop()!.toLowerCase()
-                : file.type.split("/").pop() || "png";
-              const base64 = await readFileAsBase64(file);
-              const absPath = await api.saveNoteAsset(base64, ext);
-              const url = convertFileSrc(absPath);
-              const altText = file.name.replace(/\.[^.]+$/, "") || "image";
-              vditor.insertValue(`![${altText}](${url})\n`);
+    let aborted = false;
+    (async () => {
+      if (isMarkdown || isLegacyMarkdownBody) {
+        try {
+          const blocks = await editor.tryParseMarkdownToBlocks(content);
+          if (aborted) return;
+          if (blocks.length > 0) {
+            editor.replaceBlocks(editor.document, blocks);
+          }
+          if (isMarkdown) {
+            try {
+              await api.migrateMdToBnote(noteId, JSON.stringify(editor.document));
+            } catch (err) {
+              console.warn("[NoteEditor] migrateMdToBnote failed:", err);
             }
-            return null;
-          } catch (err) {
-            console.error("[NoteEditor] image upload failed:", err);
-            return language === "zh" ? "图片保存失败" : "Image save failed";
           }
-        }) as (files: File[]) => Promise<string>,
-      },
-      input: (value: string) => {
-        if (newEntry.isSettingValue) return;
-        if (value === newEntry.contentSnapshot) return;
-        newEntry.contentSnapshot = value;
-
-        // 立即上报（带 noteId！防止快切时父组件把 A 内容当成 B 的存）
-        onPendingChangeRef.current?.(newEntry.noteId, value);
-
-        if (newEntry.debounceTimer) clearTimeout(newEntry.debounceTimer);
-        newEntry.debounceTimer = setTimeout(() => {
-          newEntry.debounceTimer = null;
-          onContentChangeRef.current(newEntry.noteId, value);
-        }, AUTOSAVE_DELAY);
-      },
-      after: () => {
-        newEntry.ready = true;
-        if (newEntry.pendingContent !== null) {
-          newEntry.isSettingValue = true;
-          try {
-            vditor.setValue(newEntry.pendingContent, true);
-            vditor.clearStack();
-            newEntry.contentSnapshot = newEntry.pendingContent;
-          } finally {
-            newEntry.isSettingValue = false;
-            newEntry.pendingContent = null;
-          }
+        } catch (err) {
+          if (aborted) return;
+          console.warn("[NoteEditor] tryParseMarkdownToBlocks failed:", err);
         }
-        container.classList.remove("editor-busy");
-        applyThemeTo(vditor);
-        startCodeObserver(newEntry);
-      },
-    });
-    newEntry.vditor = vditor;
-    evictIfNeeded(noteId);
-  }, [noteId, content, language, showOutline]);
-
-  // showOutline 切换：同步到所有缓存容器的 class
-  // （非当前实例也要更新，避免之后切回去时样式错位）
-  useEffect(() => {
-    for (const entry of editorsCache.values()) {
-      entry.container.classList.toggle("no-outline", !showOutline);
-    }
-  }, [showOutline]);
-
-  // 主题切换：观察 .app-shell class 变化，挨个给已就绪的实例调 setTheme
-  useEffect(() => {
-    const applyAll = () => {
-      for (const entry of editorsCache.values()) {
-        if (entry.ready && entry.vditor) applyThemeTo(entry.vditor);
+        return;
       }
-    };
-    const appShell = document.querySelector(".app-shell");
-    if (!appShell) return;
-    const observer = new MutationObserver(applyAll);
-    observer.observe(appShell, { attributes: true, attributeFilter: ["class"] });
-    applyAll();
-    const timer = setTimeout(applyAll, 300);
+
+      const blocks = parseInitialBnote(content);
+      if (blocks.length === 0 || blocks === EMPTY_DOC) return;
+      try {
+        editor.replaceBlocks(editor.document, blocks);
+      } catch (err) {
+        console.warn("[NoteEditor] replaceBlocks failed,保留空文档:", err);
+      }
+    })();
+
     return () => {
-      clearTimeout(timer);
-      observer.disconnect();
+      aborted = true;
     };
+    // 只在挂载时执行一次。eslint 关掉:editor / isMarkdown / content 等在父组件
+    // key={noteId} 重建语义下都是同实例稳定的。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <div ref={rootRef} className="note-vditor-root" />;
+  useEffect(() => {
+    const shell = document.querySelector(".app-shell");
+    if (!shell) return;
+    const obs = new MutationObserver(() => setIsDark(detectIsDark()));
+    obs.observe(shell, { attributes: true, attributeFilter: ["class"] });
+    setIsDark(detectIsDark());
+    return () => obs.disconnect();
+  }, []);
+
+  // 把当前 editor 暴露给 NotesView 顶栏(导出按钮、未来其它跨组件操作)使用。
+  // 见 activeNoteEditorStore.ts。
+  useEffect(() => {
+    activeNoteEditorStore.set(editor);
+    return () => {
+      if (activeNoteEditorStore.get() === editor) activeNoteEditorStore.set(null);
+    };
+  }, [editor]);
+
+  // 给代码块注入「复制」按钮:监听编辑器 DOM 变化,扫描未处理的 codeBlock 容器,
+  // append 一个 contentEditable=false 的浮动按钮。BlockNote 不自带复制按钮。
+  const rootElRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = rootElRef.current;
+    if (!root) return;
+    const copyLabel = language === "zh" ? "复制" : "Copy";
+    const copiedLabel = language === "zh" ? "已复制" : "Copied";
+    const failedLabel = language === "zh" ? "失败" : "Failed";
+
+    const enhance = () => {
+      const containers = root.querySelectorAll<HTMLElement>(
+        '.bn-block-content[data-content-type="codeBlock"]:not([data-copy-injected])',
+      );
+      containers.forEach((container) => {
+        container.setAttribute("data-copy-injected", "1");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "notes-codeblock-copy";
+        btn.contentEditable = "false";
+        btn.textContent = copyLabel;
+        btn.addEventListener("mousedown", (e) => e.preventDefault());
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const code = container.querySelector("code");
+          const text = code ? code.textContent ?? "" : "";
+          navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              btn.textContent = copiedLabel;
+              btn.classList.add("copied");
+              window.setTimeout(() => {
+                btn.textContent = copyLabel;
+                btn.classList.remove("copied");
+              }, 1400);
+            })
+            .catch(() => {
+              btn.textContent = failedLabel;
+              window.setTimeout(() => (btn.textContent = copyLabel), 1400);
+            });
+        });
+        container.appendChild(btn);
+      });
+    };
+
+    let raf = 0;
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        enhance();
+      });
+    };
+    schedule();
+    const obs = new MutationObserver(schedule);
+    obs.observe(root, { childList: true, subtree: true });
+    return () => {
+      obs.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [language]);
+
+  const debounceRef = useRef<number | undefined>(undefined);
+  const lastSerializedRef = useRef<string>("");
+  const handleChange = useCallback(() => {
+    const json = JSON.stringify(editor.document);
+    if (json === lastSerializedRef.current) return;
+    lastSerializedRef.current = json;
+    onPendingChangeRef.current?.(noteId, json);
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = undefined;
+      onContentChangeRef.current(noteId, json);
+    }, AUTOSAVE_DELAY);
+  }, [editor, noteId]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = undefined;
+        try {
+          const json = JSON.stringify(editor.document);
+          if (json !== lastSerializedRef.current) {
+            onContentChangeRef.current(noteId, json);
+          } else {
+            onContentChangeRef.current(noteId, lastSerializedRef.current);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [editor, noteId]);
+
+  /** 合并默认 + PageBreak slash menu 项;按用户输入过滤 */
+  const getSlashMenuItems = useCallback(
+    (query: string): DefaultReactSuggestionItem[] => {
+      const items = [
+        ...getDefaultReactSlashMenuItems(editor),
+        ...getPageBreakReactSlashMenuItems(editor),
+      ];
+      return filterSuggestionItems(items, query);
+    },
+    [editor],
+  );
+
+  return (
+    <div
+      ref={rootElRef}
+      className={"note-blocknote-root" + (showOutline ? " has-outline" : "")}
+    >
+      <BlockNoteView
+        editor={editor}
+        theme={isDark ? "dark" : "light"}
+        onChange={handleChange}
+        slashMenu={false}
+      >
+        <SuggestionMenuController
+          triggerCharacter="/"
+          getItems={async (query) => getSlashMenuItems(query)}
+        />
+      </BlockNoteView>
+      {showOutline ? <NoteOutline editor={editor} language={language} /> : null}
+    </div>
+  );
 }
 
 /**
- * 用 React.memo 包装：父组件因 saveNote 返回的 NoteMeta、tag 编辑等触发的 re-render
- * 不会传到这里，仅当真正影响编辑器渲染的 prop 变化才重渲染。
+ * Markdown 块编辑器(基于 BlockNote @blocknote/mantine, Notion 风格)。
+ *
+ * 切换便签策略:父组件用 `key={noteId}` 强制重建。BlockNote 实例创建成本远低于 Vditor,
+ * 重建时间在 100~200ms,可接受。
+ *
+ * 老 .md 便签迁移:打开时挂载 effect 调 BlockNote 的 markdown parser,
+ * 解析成功后通过 api.migrateMdToBnote 让后端把 .md → .bnote + index 更新。
  */
 export const NoteEditor = memo(
   NoteEditorBase,
   (prev, next) =>
     prev.noteId === next.noteId &&
-    prev.content === next.content &&
     prev.language === next.language &&
-    prev.showOutline === next.showOutline,
+    prev.showOutline === next.showOutline
 );
+
+/** 兼容老 import:NotesView 仍在用 dropEditorCache / renameEditorCache,
+ *  BlockNote 走父组件 key={noteId} 重建,这两个 no-op 即可。 */
+export function dropEditorCache(_noteId: string): void {
+  /* noop */
+}
+
+export function renameEditorCache(_oldId: string, _newId: string): void {
+  /* noop */
+}

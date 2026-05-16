@@ -64,6 +64,8 @@ export const api: ArchiveApi = {
   setAutostartEnabled: (enabled) => invoke<void>("set_autostart_enabled", { enabled }),
   // 分类管理
   updateCategories: (categories) => invoke<AppData>("update_categories", { categories }),
+  setNoteAssetsPath: (path) => invoke<AppData>("set_note_assets_path", { path }),
+  getNoteAssetsDir: () => invoke<string>("get_note_assets_dir"),
   // 回收站
   getTrashItems: () => invoke<TrashItem[]>("get_trash_items"),
   deleteProject: (projectId) => invoke<AppData>("delete_project", { projectId }),
@@ -125,4 +127,7 @@ export const api: ArchiveApi = {
     invoke<void>("permanently_delete_note", { trashId }),
   emptyNotesTrash: () => invoke<void>("empty_notes_trash"),
   saveNoteAsset: (data, ext) => invoke<string>("save_note_asset", { data, ext }),
+  listPendingMigrations: () => invoke<string[]>("list_pending_migrations"),
+  migrateMdToBnote: (oldId: string, bnoteContent: string) =>
+    invoke<NoteMeta>("migrate_md_to_bnote", { oldId, bnoteContent }),
 };

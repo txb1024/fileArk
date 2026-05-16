@@ -6850,3 +6850,397 @@ input {
 .compact-button:hover {
   background: var(--surface-soft);
 }
+
+/* ───────────────────────────────────────────────────────────
+ * BlockNote 编辑器主题适配
+ * 文档:https://www.blocknotejs.org/docs/styling-theming/themes
+ * 思路:用 FileArk 的 CSS 变量覆盖 BlockNote 的 --bn-* 变量
+ * ─────────────────────────────────────────────────────────── */
+
+.note-blocknote-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.note-blocknote-root .bn-container {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+  --bn-font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+  --bn-border-radius: 6px;
+}
+
+/* 编辑区滚动 — 更舒展的版式 */
+.note-blocknote-root .bn-editor {
+  padding: 56px 64px 160px;
+  max-width: 820px;
+  margin: 0 auto;
+  width: 100%;
+  font-size: 15.5px;
+  line-height: 1.75;
+}
+
+/* 标题字号 + 间距,Notion 风格 */
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="1"] {
+  font-size: 1.875em;
+  font-weight: 700;
+  margin-top: 1.4em;
+  margin-bottom: 0.2em;
+}
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="2"] {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin-top: 1.4em;
+  margin-bottom: 0.2em;
+}
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="3"] {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin-top: 1.2em;
+  margin-bottom: 0.2em;
+}
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="4"],
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="5"],
+.note-blocknote-root .bn-block-content[data-content-type="heading"][data-level="6"] {
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 1em;
+}
+
+/* 段落、列表更舒服的间距 */
+.note-blocknote-root .bn-block-content[data-content-type="paragraph"] {
+  padding: 2px 0;
+}
+.note-blocknote-root .bn-block-content[data-content-type="bulletListItem"],
+.note-blocknote-root .bn-block-content[data-content-type="numberedListItem"],
+.note-blocknote-root .bn-block-content[data-content-type="checkListItem"] {
+  padding: 1px 0;
+}
+
+/* 引用块 */
+.note-blocknote-root .bn-block-content[data-content-type="quote"] {
+  border-left: 3px solid var(--accent);
+  padding: 4px 0 4px 16px;
+  color: var(--muted);
+  font-style: normal;
+}
+
+/* 分割线更克制 */
+.note-blocknote-root .bn-block-content[data-content-type="divider"] {
+  margin: 24px 0;
+}
+
+/* 选中文本更柔和 */
+.note-blocknote-root .bn-editor ::selection {
+  background: var(--accent-soft);
+}
+
+/* Light 主题 */
+.app-shell:not(.theme-dark) .note-blocknote-root .bn-container {
+  --bn-colors-editor-text: var(--text);
+  --bn-colors-editor-background: var(--bg);
+  --bn-colors-menu-text: var(--text);
+  --bn-colors-menu-background: var(--surface);
+  --bn-colors-tooltip-text: var(--text);
+  --bn-colors-tooltip-background: var(--surface);
+  --bn-colors-hovered-text: var(--text);
+  --bn-colors-hovered-background: var(--surface-soft);
+  --bn-colors-selected-text: var(--accent-on);
+  --bn-colors-selected-background: var(--accent);
+  --bn-colors-disabled-text: var(--muted);
+  --bn-colors-disabled-background: var(--surface-soft);
+  --bn-colors-shadow: rgba(15, 15, 15, 0.12);
+  --bn-colors-border: var(--border);
+  --bn-colors-side-menu: var(--muted);
+}
+
+/* Dark 主题 */
+.app-shell.theme-dark .note-blocknote-root .bn-container {
+  --bn-colors-editor-text: var(--text);
+  --bn-colors-editor-background: var(--bg);
+  --bn-colors-menu-text: var(--text);
+  --bn-colors-menu-background: var(--surface);
+  --bn-colors-tooltip-text: var(--text);
+  --bn-colors-tooltip-background: var(--surface);
+  --bn-colors-hovered-text: var(--text);
+  --bn-colors-hovered-background: var(--sidebar-hover);
+  --bn-colors-selected-text: var(--accent-on);
+  --bn-colors-selected-background: var(--accent);
+  --bn-colors-disabled-text: var(--muted);
+  --bn-colors-disabled-background: var(--surface-soft);
+  --bn-colors-shadow: rgba(0, 0, 0, 0.4);
+  --bn-colors-border: var(--border);
+  --bn-colors-side-menu: var(--muted);
+}
+
+/* 编辑器内代码块 — 跟随项目风格 */
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"] {
+  background: var(--surface-soft);
+  border-radius: 8px;
+  position: relative;
+}
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"] pre,
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"] code {
+  color: #1f2328;
+}
+
+.app-shell.theme-dark .note-blocknote-root .bn-block-content[data-content-type="codeBlock"] {
+  background: #1d1d1d;
+}
+.app-shell.theme-dark .note-blocknote-root .bn-block-content[data-content-type="codeBlock"] pre,
+.app-shell.theme-dark .note-blocknote-root .bn-block-content[data-content-type="codeBlock"] code {
+  color: #e6edf3;
+}
+
+/* 代码块复制按钮 — 浮在代码块右上角,只在 hover 时显示 */
+.notes-codeblock-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: #57606a;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, background 80ms ease;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+}
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"]:hover .notes-codeblock-copy,
+.notes-codeblock-copy:focus-visible {
+  opacity: 1;
+}
+.notes-codeblock-copy:hover {
+  background: #fff;
+  color: #1f2328;
+}
+.notes-codeblock-copy.copied {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: var(--accent);
+}
+.app-shell.theme-dark .notes-codeblock-copy {
+  background: rgba(48, 54, 61, 0.85);
+  color: #b1bac4;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.app-shell.theme-dark .notes-codeblock-copy:hover {
+  background: #30363d;
+  color: #e6edf3;
+}
+
+/* 内联 code */
+.note-blocknote-root code {
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", "Consolas",
+    "Liberation Mono", "Menlo", "Fira Code", monospace;
+  font-size: 87%;
+  color: #1f2328;
+}
+.app-shell.theme-dark .note-blocknote-root code {
+  color: #e6edf3;
+}
+
+/* 顶部 toolbar 与 FileArk 配色协调 */
+.note-blocknote-root .bn-formatting-toolbar,
+.note-blocknote-root .bn-link-toolbar,
+.note-blocknote-root .bn-file-panel,
+.note-blocknote-root .bn-slash-menu,
+.note-blocknote-root .bn-suggestion-menu {
+  border: 0.5px solid var(--border);
+  box-shadow:
+    0 1px 2px rgba(15, 15, 15, 0.04),
+    0 8px 24px rgba(15, 15, 15, 0.1);
+}
+
+.app-shell.theme-dark .note-blocknote-root .bn-formatting-toolbar,
+.app-shell.theme-dark .note-blocknote-root .bn-link-toolbar,
+.app-shell.theme-dark .note-blocknote-root .bn-file-panel,
+.app-shell.theme-dark .note-blocknote-root .bn-slash-menu,
+.app-shell.theme-dark .note-blocknote-root .bn-suggestion-menu {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* 拖拽 handle / 加号按钮 hover 时颜色与 accent 协调 */
+.note-blocknote-root .bn-side-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* 占位符颜色更柔和 */
+.note-blocknote-root .bn-inline-content[data-placeholder]:before {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* ── 导出菜单(浮在编辑器右上角)──────────────────────── */
+.note-export-wrap {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 5;
+}
+
+/* NotesView 顶栏导出按钮 */
+.notes-export-wrap {
+  position: relative;
+}
+.notes-export-menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow:
+    0 1px 2px rgba(15, 15, 15, 0.04),
+    0 8px 24px rgba(15, 15, 15, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 10;
+}
+.notes-export-menu button {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.notes-export-menu button:hover {
+  background: var(--surface-soft);
+}
+.note-export-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 80ms ease;
+}
+.note-export-btn:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+.note-export-menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow:
+    0 1px 2px rgba(15, 15, 15, 0.04),
+    0 8px 24px rgba(15, 15, 15, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.note-export-menu button {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.note-export-menu button:hover {
+  background: var(--surface-soft);
+}
+
+.note-blocknote-root {
+  position: relative;
+}
+
+/* ── 大纲面板 ─────────────────────────────────────────── */
+.note-blocknote-root.has-outline {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+}
+.note-blocknote-root.has-outline .bn-container {
+  min-width: 0;
+}
+.note-outline {
+  border-left: 1px solid var(--border);
+  padding: 18px 12px 24px;
+  overflow-y: auto;
+  font-size: 12px;
+  background: var(--surface);
+}
+.note-outline-title {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 0 0 10px 4px;
+}
+.note-outline-hint {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 4px;
+  line-height: 1.6;
+}
+.note-outline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.note-outline-item {
+  cursor: pointer;
+  padding: 4px 8px;
+  margin: 1px 0;
+  border-radius: 4px;
+  color: var(--text);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 80ms ease;
+}
+.note-outline-item:hover {
+  background: var(--surface-soft);
+}
+.note-outline-level-1 {
+  font-weight: 600;
+}
+.note-outline-level-2 {
+  font-weight: 500;
+}
+.note-outline-level-3,
+.note-outline-level-4,
+.note-outline-level-5,
+.note-outline-level-6 {
+  color: var(--muted);
+  font-size: 11px;
+}

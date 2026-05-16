@@ -17,6 +17,7 @@ import {
   FileText,
   Pencil,
   ChevronLeft,
+  Download,
 } from "lucide-react";
 import { api } from "../api";
 import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
@@ -28,6 +29,8 @@ import {
 } from "../components/notes/NoteTree";
 import { ContextMenu, type ContextMenuItem } from "../components/notes/ContextMenu";
 import { EditorErrorBoundary } from "../components/notes/EditorErrorBoundary";
+import { useActiveNoteEditor } from "../components/notes/activeNoteEditorStore";
+import { exportNoteAs, type ExportKind } from "../components/notes/noteExport";
 
 type Language = "zh" | "en";
 
@@ -77,6 +80,10 @@ const labels = {
     exitFocus: "退出专注模式 (Esc)",
     showOutline: "显示大纲",
     hideOutline: "隐藏大纲",
+    exportNote: "导出",
+    exportMarkdown: "导出为 Markdown",
+    exportHtml: "导出为 HTML",
+    exportPdf: "打印 / 另存 PDF",
     pinToolbar: "固定工具栏",
     unpinToolbar: "取消固定",
     rename: "重命名",
@@ -117,6 +124,10 @@ const labels = {
     exitFocus: "Exit focus mode (Esc)",
     showOutline: "Show outline",
     hideOutline: "Hide outline",
+    exportNote: "Export",
+    exportMarkdown: "Export as Markdown",
+    exportHtml: "Export as HTML",
+    exportPdf: "Print / Save PDF",
     pinToolbar: "Pin toolbar",
     unpinToolbar: "Unpin toolbar",
     rename: "Rename",
@@ -183,6 +194,28 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
   const [confirmDelete, setConfirmDelete] = useState<NoteTreeNode | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [outlineVisible, setOutlineVisible] = useState(true);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+
+  const activeEditor = useActiveNoteEditor();
+
+  const handleExport = useCallback(
+    async (kind: ExportKind) => {
+      setExportMenuOpen(false);
+      if (!activeEditor || !activeMeta) return;
+      const base = (activeMeta.title || activeMeta.name || "note").replace(
+        /\.(bnote|md)$/i,
+        "",
+      );
+      try {
+        await exportNoteAs(activeEditor, base, kind);
+      } catch (err) {
+        console.error("[NotesView] export failed:", err);
+      }
+    },
+    // activeMeta 用 ref 不合适;它是 useMemo 派生,引用变化反映了 noteId 变化
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeEditor, activeMeta?.id],
+  );
 
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
     try {
@@ -751,11 +784,32 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
                 </div>
               </div>
               <div className="notes-editor-actions">
-                {lastSavedAt && (
-                  <span className="muted small">
-                    {t.lastSaved}: {lastSavedAt}
-                  </span>
-                )}
+                <div className="notes-export-wrap">
+                  <button
+                    className="notes-focus-toggle"
+                    onClick={() => setExportMenuOpen((v) => !v)}
+                    title={t.exportNote}
+                    disabled={!activeEditor}
+                  >
+                    <Download size={14} />
+                  </button>
+                  {exportMenuOpen ? (
+                    <div
+                      className="notes-export-menu"
+                      onMouseLeave={() => setExportMenuOpen(false)}
+                    >
+                      <button onClick={() => handleExport("markdown")}>
+                        {t.exportMarkdown}
+                      </button>
+                      <button onClick={() => handleExport("html")}>
+                        {t.exportHtml}
+                      </button>
+                      <button onClick={() => handleExport("pdf")}>
+                        {t.exportPdf}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   className="notes-focus-toggle"
                   onClick={() => setOutlineVisible((v) => !v)}
@@ -789,6 +843,7 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
                     新内容到位前 .loading 蒙层会盖住编辑区,用户不会看到「上一篇内容残留」的混乱。 */}
                 {editorPayload ? (
                   <NoteEditor
+                    key={editorPayload.id}
                     noteId={editorPayload.id}
                     content={editorPayload.content}
                     onContentChange={handleContentChange}

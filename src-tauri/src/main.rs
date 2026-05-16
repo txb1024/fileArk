@@ -335,6 +335,27 @@ fn update_categories(app: tauri::AppHandle, categories: Vec<String>) -> Result<A
     Ok(data)
 }
 
+/// 自定义便签附件存放路径。传入 None 或空字符串 = 恢复默认 `{workspaceRoot}/notes/assets`。
+#[tauri::command]
+fn set_note_assets_path(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let cleaned = path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    data.settings.note_assets_path = cleaned;
+    write_data(&app, &data)?;
+    Ok(data)
+}
+
+/// 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在。
+#[tauri::command]
+fn get_note_assets_dir(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(store::notes_assets_dir(&app).to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn list_category_files_cmd(
     _app: tauri::AppHandle,
@@ -1003,13 +1024,32 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
             continue;
         }
         if let Ok(content) = read_note_content(&app, id) {
-            if content.to_lowercase().contains(&lower) {
+            let haystack = if id.ends_with(".bnote") {
+                extract_plain_text_from_blocks(&content).to_lowercase()
+            } else {
+                content.to_lowercase()
+            };
+            if haystack.contains(&lower) {
                 results.push(note.clone());
             }
         }
     }
     results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(results)
+}
+
+#[tauri::command]
+fn list_pending_migrations(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    list_pending_migrations_entry(&app)
+}
+
+#[tauri::command]
+fn migrate_md_to_bnote(
+    app: tauri::AppHandle,
+    old_id: String,
+    bnote_content: String,
+) -> Result<NoteMeta, String> {
+    migrate_md_to_bnote_entry(&app, &old_id, &bnote_content)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1419,6 +1459,8 @@ fn main() {
             check_root_files,
             migrate_root,
             update_categories,
+            set_note_assets_path,
+            get_note_assets_dir,
             select_root,
             select_files,
             list_category_files_cmd,
@@ -1471,6 +1513,8 @@ fn main() {
             delete_note,
             delete_folder,
             search_notes,
+            list_pending_migrations,
+            migrate_md_to_bnote,
             list_trashed_notes,
             restore_note,
             permanently_delete_note,

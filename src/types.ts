@@ -45,6 +45,7 @@ export type AppData = {
   settings: {
     workspaceRoot: string;
     categories: string[];
+    noteAssetsPath?: string | null;
   };
 };
 
@@ -304,6 +305,11 @@ export type Messages = {
   workspaceRootDesc: string;
   workspaceRootNotSet: string;
   changeRoot: string;
+  noteAssets: string;
+  noteAssetsDesc: string;
+  noteAssetsDefault: string;
+  changeNoteAssets: string;
+  resetNoteAssets: string;
   categoryManagement: string;
   editCategory: string;
   database: string;
@@ -341,6 +347,10 @@ export type ArchiveApi = {
   getAutostartEnabled: () => Promise<boolean>;
   setAutostartEnabled: (enabled: boolean) => Promise<void>;
   updateCategories: (categories: string[]) => Promise<AppData>;
+  /** 自定义便签附件目录。传 null 恢复默认 */
+  setNoteAssetsPath: (path: string | null) => Promise<AppData>;
+  /** 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在 */
+  getNoteAssetsDir: () => Promise<string>;
   getTrashItems: () => Promise<TrashItem[]>;
   deleteProject: (projectId: string) => Promise<AppData>;
   renameProject: (projectId: string, newName: string) => Promise<AppData>;
@@ -393,5 +403,9 @@ export type ArchiveApi = {
   emptyNotesTrash: () => Promise<void>;
   /** 保存便签内嵌资源（图片等），返回绝对路径，前端用 convertFileSrc 转 webview URL */
   saveNoteAsset: (data: string, ext: string) => Promise<string>;
+  /** 列出仍为 .md 后缀的便签 id, 启动后逐个迁移到 .bnote */
+  listPendingMigrations: () => Promise<string[]>;
+  /** 把指定 .md 便签替换为 .bnote (前端用 BlockNote 解析好 markdown 后调用) */
+  migrateMdToBnote: (oldId: string, bnoteContent: string) => Promise<NoteMeta>;
 };
 

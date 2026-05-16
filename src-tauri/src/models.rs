@@ -66,6 +66,10 @@ pub struct Settings {
     #[serde(rename = "workspaceRoot")]
     pub workspace_root: String,
     pub categories: Vec<String>,
+    /// 便签附件(图片、文件)存放目录。None = 使用默认 `{workspaceRoot}/notes/assets`。
+    /// 自定义路径必须是绝对路径,允许放在 workspace 之外。
+    #[serde(rename = "noteAssetsPath", default, skip_serializing_if = "Option::is_none")]
+    pub note_assets_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
