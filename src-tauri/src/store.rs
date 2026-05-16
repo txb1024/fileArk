@@ -1,6 +1,6 @@
 //! 数据持久化层
 
-use crate::models::{AppData, NoteMeta, NoteTreeNode, NotesIndex, Project, TrashData, TrashedNote, WorkspaceMeta, WorkspaceRegistry};
+use crate::models::{AppData, NoteMeta, NoteTreeNode, NotesIndex, Project, TrashData, TrashedFile, TrashedNote, WorkspaceMeta, WorkspaceRegistry};
 use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, Manager};
@@ -105,7 +105,14 @@ fn workspace_data_path(app: &AppHandle, data_file: &str) -> std::path::PathBuf {
 }
 
 fn trash_data_path(app: &AppHandle) -> std::path::PathBuf {
-    app_data_dir(app).join("trash.json")
+    // 按工作空间隔离回收站：trash-{workspaceId}.json
+    // 如果 registry 还没初始化（极少出现），退化到全局 trash.json
+    match read_registry(app) {
+        Ok(reg) if !reg.active_workspace_id.is_empty() => {
+            app_data_dir(app).join(format!("trash-{}.json", reg.active_workspace_id))
+        }
+        _ => app_data_dir(app).join("trash.json"),
+    }
 }
 
 // ── AppData ─────────────────────────────────────────────────
@@ -155,6 +162,48 @@ pub fn write_data(app: &AppHandle, data: &AppData) -> Result<(), String> {
 
 // ── Trash ───────────────────────────────────────────────────
 
+/// 回收站保留天数；超过此期限的条目在 `cleanup_expired_trash` 中会被永久清理。
+pub const TRASH_RETENTION_DAYS: u64 = 30;
+const TRASH_RETENTION_SECS: u64 = TRASH_RETENTION_DAYS * 86400;
+
+/// 回收站文件存储目录：按工作空间隔离。
+/// `{app_data}/trashed_files-{workspaceId}/{uuid}/{原文件名}`，避免重名碰撞 +
+/// 多工作空间互不污染。
+pub fn trashed_files_dir(app: &AppHandle) -> std::path::PathBuf {
+    let base = match read_registry(app) {
+        Ok(reg) if !reg.active_workspace_id.is_empty() => {
+            app_data_dir(app).join(format!("trashed_files-{}", reg.active_workspace_id))
+        }
+        _ => app_data_dir(app).join("trashed_files"),
+    };
+    if !base.exists() {
+        let _ = fs::create_dir_all(&base);
+    }
+    base
+}
+
+/// 一次性迁移：旧版本所有工作空间共享 `trash.json` / `trashed_files/`,
+/// 启动时如果发现旧目录还存在且当前工作空间的新路径尚未建立,把它们搬过去。
+/// （只挪一次,搬完旧路径就不存在了,后续启动直接跳过。）
+pub fn migrate_legacy_trash_to_workspace(app: &AppHandle) -> Result<(), String> {
+    let reg = read_registry(app)?;
+    if reg.active_workspace_id.is_empty() {
+        return Ok(());
+    }
+    let base = app_data_dir(app);
+    let legacy_json = base.join("trash.json");
+    let new_json = base.join(format!("trash-{}.json", reg.active_workspace_id));
+    if legacy_json.exists() && !new_json.exists() {
+        let _ = fs::rename(&legacy_json, &new_json);
+    }
+    let legacy_dir = base.join("trashed_files");
+    let new_dir = base.join(format!("trashed_files-{}", reg.active_workspace_id));
+    if legacy_dir.exists() && !new_dir.exists() {
+        let _ = fs::rename(&legacy_dir, &new_dir);
+    }
+    Ok(())
+}
+
 pub fn read_trash(app: &AppHandle) -> Result<TrashData, String> {
     let path = trash_data_path(app);
     if !path.exists() {
@@ -168,6 +217,264 @@ pub fn write_trash(app: &AppHandle, trash: &TrashData) -> Result<(), String> {
     let path = trash_data_path(app);
     let json = serde_json::to_string_pretty(trash).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// 把项目内的单个文件 / 文件夹移入回收站存储区，返回 TrashedFile（仅元数据，
+/// 上层 command 负责把它 push 到 TrashData.files 并持久化）。
+pub fn move_file_into_trash(
+    app: &AppHandle,
+    source_path: &Path,
+    project_id: Option<String>,
+    project_name: Option<String>,
+    category: Option<String>,
+) -> Result<TrashedFile, String> {
+    if !source_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+    let id = Uuid::new_v4().to_string();
+    let name = source_path
+        .file_name()
+        .ok_or("无法获取文件名")?
+        .to_string_lossy()
+        .to_string();
+    let storage_root = trashed_files_dir(app).join(&id);
+    fs::create_dir_all(&storage_root).map_err(|e| e.to_string())?;
+    let storage_path = storage_root.join(&name);
+
+    let metadata = fs::metadata(source_path).map_err(|e| e.to_string())?;
+    let is_directory = metadata.is_dir();
+    let size = if is_directory {
+        dir_size(source_path).unwrap_or(0)
+    } else {
+        metadata.len() as i64
+    };
+
+    // 优先 rename(同卷下原子)；跨卷或权限失败则 copy+remove 兜底
+    if fs::rename(source_path, &storage_path).is_err() {
+        if is_directory {
+            crate::utils::copy_dir_all(source_path, &storage_path)?;
+            fs::remove_dir_all(source_path).map_err(|e| e.to_string())?;
+        } else {
+            fs::copy(source_path, &storage_path).map_err(|e| e.to_string())?;
+            fs::remove_file(source_path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(TrashedFile {
+        id,
+        name,
+        original_path: source_path.to_string_lossy().to_string(),
+        trash_storage_path: storage_path.to_string_lossy().to_string(),
+        is_directory,
+        size,
+        deleted_at: crate::utils::now_rfc3339(),
+        project_id,
+        project_name,
+        category,
+    })
+}
+
+/// 把回收站中的文件 / 文件夹恢复到 original_path。
+/// 若原父目录已不存在则创建；若同名已占用则追加 (1)(2)...
+pub fn restore_trashed_file_entry(app: &AppHandle, file_id: &str) -> Result<String, String> {
+    let mut trash = read_trash(app)?;
+    let idx = trash
+        .files
+        .iter()
+        .position(|f| f.id == file_id)
+        .ok_or("文件不在回收站")?;
+    let file = trash.files[idx].clone();
+    let storage = Path::new(&file.trash_storage_path);
+    if !storage.exists() {
+        trash.files.remove(idx);
+        write_trash(app, &trash)?;
+        return Err("回收站中的文件实体已丢失,已清理元数据".to_string());
+    }
+    let original = Path::new(&file.original_path);
+    let parent = original.parent().ok_or("无效的原路径")?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let final_target = unique_target(parent, &file.name);
+
+    if fs::rename(storage, &final_target).is_err() {
+        if file.is_directory {
+            crate::utils::copy_dir_all(storage, &final_target)?;
+            fs::remove_dir_all(storage).map_err(|e| e.to_string())?;
+        } else {
+            fs::copy(storage, &final_target).map_err(|e| e.to_string())?;
+            fs::remove_file(storage).map_err(|e| e.to_string())?;
+        }
+    }
+    // 清理空的 storage_root 目录
+    if let Some(p) = storage.parent() {
+        let _ = fs::remove_dir(p);
+    }
+    trash.files.remove(idx);
+    write_trash(app, &trash)?;
+    Ok(final_target.to_string_lossy().to_string())
+}
+
+/// 永久删除单个 TrashedFile：物理删除存储区内容 + 移除元数据
+pub fn permanently_delete_trashed_file_entry(app: &AppHandle, file_id: &str) -> Result<(), String> {
+    let mut trash = read_trash(app)?;
+    let idx = trash
+        .files
+        .iter()
+        .position(|f| f.id == file_id)
+        .ok_or("文件不在回收站")?;
+    let file = trash.files.remove(idx);
+    let storage = Path::new(&file.trash_storage_path);
+    if storage.exists() {
+        if file.is_directory {
+            let _ = fs::remove_dir_all(storage);
+        } else {
+            let _ = fs::remove_file(storage);
+        }
+    }
+    if let Some(parent) = storage.parent() {
+        let _ = fs::remove_dir(parent);
+    }
+    write_trash(app, &trash)?;
+    Ok(())
+}
+
+/// 30 天清理：扫描三类回收站(项目 / 项目内文件 / 便签),
+/// 把超过保留期的条目永久删除并把磁盘资源一并清理。
+/// 调用点：每次 list_* 命令开头各调一次,让回收站自然瘦身;
+///        启动时也调一次。
+pub fn cleanup_expired_trash(app: &AppHandle) -> Result<(), String> {
+    let now = current_unix_secs();
+    let cutoff = now.saturating_sub(TRASH_RETENTION_SECS);
+
+    // TrashData (项目元数据 + 文件)
+    let mut trash = read_trash(app)?;
+    let mut changed = false;
+
+    let before = trash.items.len();
+    trash.items.retain(|item| match parse_rfc3339_secs(&item.deleted_at) {
+        Some(t) if t < cutoff => {
+            // 项目超期：把原磁盘目录也一并清掉
+            let path = Path::new(&item.original_path);
+            if path.exists() {
+                let _ = fs::remove_dir_all(path);
+            }
+            false
+        }
+        _ => true,
+    });
+    if trash.items.len() != before {
+        changed = true;
+    }
+
+    let before = trash.files.len();
+    trash.files.retain(|file| match parse_rfc3339_secs(&file.deleted_at) {
+        Some(t) if t < cutoff => {
+            let storage = Path::new(&file.trash_storage_path);
+            if storage.exists() {
+                if file.is_directory {
+                    let _ = fs::remove_dir_all(storage);
+                } else {
+                    let _ = fs::remove_file(storage);
+                }
+            }
+            if let Some(parent) = storage.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+            false
+        }
+        _ => true,
+    });
+    if trash.files.len() != before {
+        changed = true;
+    }
+    if changed {
+        write_trash(app, &trash)?;
+    }
+
+    // 便签回收站
+    let mut index = read_notes_index(app)?;
+    let before = index.trash.len();
+    index
+        .trash
+        .retain(|t| !matches!(parse_rfc3339_secs(&t.deleted_at), Some(ts) if ts < cutoff));
+    if index.trash.len() != before {
+        write_notes_index(app, &index)?;
+    }
+    Ok(())
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 简版 RFC3339 解析 — 只接受 "YYYY-MM-DDTHH:MM:SSZ" 这一种我们自己写出的格式。
+fn parse_rfc3339_secs(s: &str) -> Option<u64> {
+    if s.len() < 19 {
+        return None;
+    }
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let hour: u64 = s.get(11..13)?.parse().ok()?;
+    let min: u64 = s.get(14..16)?.parse().ok()?;
+    let sec: u64 = s.get(17..19)?.parse().ok()?;
+    let jdn = ymd_to_jdn(year, month, day);
+    let days = jdn - 2440588;
+    if days < 0 {
+        return None;
+    }
+    Some((days as u64) * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+fn ymd_to_jdn(y: i64, m: u32, d: u32) -> i64 {
+    let a = (14 - m as i64) / 12;
+    let yy = y + 4800 - a;
+    let mm = m as i64 + 12 * a - 3;
+    d as i64 + (153 * mm + 2) / 5 + 365 * yy + yy / 4 - yy / 100 + yy / 400 - 32045
+}
+
+/// 在 parent 下找一个未被占用的目标路径，重名时追加 (1)(2)...
+fn unique_target(parent: &Path, name: &str) -> std::path::PathBuf {
+    let candidate = parent.join(name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem = Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    for i in 1..1000 {
+        let new_name = if ext.is_empty() {
+            format!("{} ({})", stem, i)
+        } else {
+            format!("{} ({}).{}", stem, i, ext)
+        };
+        let c = parent.join(new_name);
+        if !c.exists() {
+            return c;
+        }
+    }
+    candidate
+}
+
+fn dir_size(path: &Path) -> Option<i64> {
+    let mut total: i64 = 0;
+    for entry in fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        let meta = entry.metadata().ok()?;
+        if meta.is_dir() {
+            total += dir_size(&entry.path()).unwrap_or(0);
+        } else {
+            total += meta.len() as i64;
+        }
+    }
+    Some(total)
 }
 
 // ── Notes ─────────────────────────────────────────────────

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { Search, FileText, Folder, Inbox, X } from "lucide-react";
+import { Search, FileText, Folder, Inbox, StickyNote, X } from "lucide-react";
 import { api } from "../api";
 import type { AppData, Project } from "../types";
 
 interface SearchResult {
-  type: "project" | "file" | "inbox";
+  type: "project" | "file" | "inbox" | "note";
   id: string;
   name: string;
   path: string;
@@ -13,6 +13,8 @@ interface SearchResult {
   isDirectory?: boolean;
   projectName?: string;
   category?: string;
+  /** 仅 note 用：正文匹配片段 */
+  snippet?: string;
 }
 
 interface SpotlightSearchProps {
@@ -23,6 +25,10 @@ interface SpotlightSearchProps {
   onSelectInbox?: (itemId: string) => void;
   onNavigateToFolder?: (projectName: string, category: string) => void;
   onPreviewFile?: (path: string, name: string) => void;
+  /** 跳转到指定文件所在分类并高亮闪烁该行(替代直接打开预览) */
+  onNavigateToFile?: (projectName: string, category: string, filePath: string) => void;
+  /** 点击便签结果时:跳转到便签视图并定位到该 id */
+  onSelectNote?: (noteId: string) => void;
 }
 
 // 高亮匹配文本
@@ -76,15 +82,19 @@ export function SpotlightSearch({
   onSelectInbox,
   onNavigateToFolder,
   onPreviewFile,
+  onNavigateToFile,
+  onSelectNote,
 }: SpotlightSearchProps) {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [fileResults, setFileResults] = useState<SearchResult[]>([]);
+  const [noteResults, setNoteResults] = useState<SearchResult[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const searchTimerRef = useRef<number | undefined>(undefined);
+  const noteSearchTimerRef = useRef<number | undefined>(undefined);
   const [isClosing, setIsClosing] = useState(false);
 
   // 项目 + 收件箱（同步匹配）
@@ -159,15 +169,49 @@ export function SpotlightSearch({
     };
   }, [query]);
 
-  // 合并：项目 → 文件 → 收件箱
+  // 便签搜索（后端 search_notes 同时匹配 title/tags/path/正文,防抖 200ms）
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) {
+      setNoteResults([]);
+      return;
+    }
+    if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
+    noteSearchTimerRef.current = window.setTimeout(async () => {
+      try {
+        const notes = await api.searchNotes(trimmed);
+        setNoteResults(
+          notes.map((n) => ({
+            type: "note" as const,
+            id: n.id,
+            name: n.title || n.name,
+            path: n.id,
+            // meta 显示父路径,优先 snippet(正文匹配片段)放到下方
+            meta: n.parent || "便签",
+            snippet: n.snippet || undefined,
+          }))
+        );
+      } catch {
+        setNoteResults([]);
+      }
+    }, 200);
+    return () => {
+      if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
+    };
+  }, [query]);
+
+  // 合并：项目 → 文件 → 便签 → 收件箱
   const results = useMemo(() => {
-    const merged = [...localResults, ...fileResults];
-    return merged.slice(0, 20);
-  }, [localResults, fileResults]);
+    const localProjects = localResults.filter((r) => r.type === "project");
+    const localInbox = localResults.filter((r) => r.type === "inbox");
+    const merged = [...localProjects, ...fileResults, ...noteResults, ...localInbox];
+    return merged.slice(0, 30);
+  }, [localResults, fileResults, noteResults]);
 
   useEffect(() => {
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
     };
   }, []);
 
@@ -263,12 +307,20 @@ export function SpotlightSearch({
       if (result.isDirectory) {
         pendingActionRef.current = () =>
           onNavigateToFolder?.(result.projectName || "", result.category || "");
+      } else if (onNavigateToFile) {
+        // 优先跳转 + 高亮(替代直接打开预览)
+        pendingActionRef.current = () =>
+          onNavigateToFile(result.projectName || "", result.category || "", result.path);
       } else {
+        // 兜底:没接 onNavigateToFile 时仍走预览
         pendingActionRef.current = () => onPreviewFile?.(result.path, result.name);
       }
       if (!isClosing) setIsClosing(true);
     } else if (result.type === "inbox") {
       pendingActionRef.current = () => onSelectInbox?.(result.id);
+      if (!isClosing) setIsClosing(true);
+    } else if (result.type === "note") {
+      pendingActionRef.current = () => onSelectNote?.(result.id);
       if (!isClosing) setIsClosing(true);
     }
   };
@@ -294,7 +346,7 @@ export function SpotlightSearch({
             ref={inputRef}
             type="text"
             className="spotlight-input"
-            placeholder="搜索项目、别名、标签、文件..."
+            placeholder="搜索项目、便签、文件、别名、标签..."
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -319,7 +371,7 @@ export function SpotlightSearch({
                 <div className="spotlight-list">
                   {results.map((result, index) => (
                     <button
-                      key={result.id}
+                      key={`${result.type}:${result.id}`}
                       className={`spotlight-item ${index === selectedIndex ? "selected" : ""}`}
                       onClick={() => handleSelect(result)}
                       onMouseEnter={() => setSelectedIndex(index)}
@@ -329,6 +381,7 @@ export function SpotlightSearch({
                         {result.type === "file" && result.isDirectory && <Folder size={16} />}
                         {result.type === "file" && !result.isDirectory && <FileText size={16} />}
                         {result.type === "inbox" && <Inbox size={16} />}
+                        {result.type === "note" && <StickyNote size={16} />}
                       </span>
                       <div className="spotlight-item-main">
                         <span className="spotlight-item-name">
@@ -337,6 +390,11 @@ export function SpotlightSearch({
                         <span className="spotlight-item-meta">
                           <HighlightText text={result.meta || result.path} query={query} />
                         </span>
+                        {result.type === "note" && result.snippet && (
+                          <span className="spotlight-item-snippet">
+                            <HighlightText text={result.snippet} query={query} />
+                          </span>
+                        )}
                       </div>
                       {result.size != null && !result.isDirectory && (
                         <span className="spotlight-item-size">{formatSize(result.size)}</span>
@@ -358,7 +416,7 @@ export function SpotlightSearch({
         {/* 快捷键提示（无搜索时） */}
         {!query.trim() && (
           <div className="spotlight-hints">
-            <span className="spotlight-hint-label">输入关键词搜索项目、文件、别名和标签</span>
+            <span className="spotlight-hint-label">输入关键词搜索项目、便签、文件、别名和标签</span>
           </div>
         )}
       </div>

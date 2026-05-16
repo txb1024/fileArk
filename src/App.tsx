@@ -1,6 +1,5 @@
 import {
   Archive,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -13,14 +12,13 @@ import {
   Home,
   Inbox,
   Menu,
-  Moon,
   Pencil,
   Pin,
+  PinOff,
   Plus,
   Settings,
   Sparkles,
   Star,
-  Sun,
   Trash2,
   X,
   Eye,
@@ -32,17 +30,19 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
-import type { AppData, CategoryFile, Project, TrashItem, WorkspaceRegistry } from "./types";
+import type { AppData, CategoryFile, Project, WorkspaceRegistry } from "./types";
 import { HomeView, TrashView, InboxView, SettingsView, NotesView } from "./views";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { SpotlightSearch } from "./components/SpotlightSearch";
+import { ContextMenu, type ContextMenuItem } from "./components/notes/ContextMenu";
 import {
   ConfirmDeleteDialog,
   NewProjectDialog,
   RenameWorkspaceDialog,
+  RenameProjectDialog,
   MigrateRootDialog,
-  TrashConfirmDialog,
   CategoryEditModal,
   PreviewModal,
   ConfirmDangerDialog,
@@ -64,6 +64,8 @@ type DialogState =
   | { type: "none" }
   | { type: "rename-workspace"; workspaceId: string; currentName: string }
   | { type: "delete-workspace"; workspaceId: string; name: string }
+  | { type: "rename-project"; projectId: string; currentName: string }
+  | { type: "delete-project"; projectId: string; name: string }
   | { type: "migrate-root"; oldRoot: string; newRoot: string; fileCount: number };
 
 // ── 翻譯 ──────────────────────────────────────────────────
@@ -78,7 +80,11 @@ const messages = {
     settings: "设置",
     projectList: "项目列表",
     pinned: "置顶",
+    unpinned: "取消置顶",
+    rename: "重命名",
+    deleteAction: "删除",
     openProjectFolder: "打开项目根目录",
+    openContainingFolder: "打开文件所在目录",
     searchPlaceholder: "搜索项目、别名、标签、文件  Ctrl+K",
     importFiles: "导入文件",
     newProject: "新建项目",
@@ -137,7 +143,7 @@ const messages = {
     newDatabase: "新建资料库",
     databaseNamePlaceholder: "输入资料库名称",
     confirm: "确认",
-    deleteFileConfirm: "确定要删除此文件吗？此操作不可恢复。",
+    deleteFileConfirm: "删除后文件会移入回收站，保留 30 天后自动永久删除。",
     // HomeView
     heroEyebrow: "项目入口管理器",
     heroTitle: "不用再一层层点文件夹。",
@@ -205,7 +211,11 @@ const messages = {
     settings: "Settings",
     projectList: "Project List",
     pinned: "Pinned",
+    unpinned: "Unpin",
+    rename: "Rename",
+    deleteAction: "Delete",
     openProjectFolder: "Open project folder",
+    openContainingFolder: "Open containing folder",
     searchPlaceholder: "Search projects, aliases, tags, files  Ctrl+K",
     importFiles: "Import",
     newProject: "New Project",
@@ -265,7 +275,7 @@ const messages = {
     newDatabase: "New Database",
     databaseNamePlaceholder: "Enter database name",
     confirm: "Confirm",
-    deleteFileConfirm: "Are you sure you want to delete this file? This action cannot be undone.",
+    deleteFileConfirm: "Deleted files go to trash and will be permanently removed after 30 days.",
     // HomeView
     heroEyebrow: "Project Entry Manager",
     heroTitle: "No more clicking through folders.",
@@ -360,8 +370,6 @@ export function App() {
   );
   const [dialog, setDialog] = useState<DialogState>({ type: "none" });
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
-  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
   const [copiedFile, setCopiedFile] = useState<{ path: string; name: string } | null>(null);
   const [previewFile, setPreviewFile] = useState<{
     path: string;
@@ -374,8 +382,19 @@ export function App() {
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false);
   const [wsCreating, setWsCreating] = useState(false);
   const [wsNewName, setWsNewName] = useState("");
+  const wsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const wsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [projectMenu, setProjectMenu] = useState<{
+    x: number;
+    y: number;
+    project: Project;
+  } | null>(null);
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
   const [navigatedCategory, setNavigatedCategory] = useState<{ category: string; ts: number } | null>(null);
+  /** Spotlight 搜索选中文件:跳转到该文件所在分类并在列表里闪烁高亮该行 */
+  const [highlightFile, setHighlightFile] = useState<{ path: string; ts: number } | null>(null);
+  /** Spotlight 搜索选中便签后,带 id 跳到便签视图;NotesView 监听 ts 触发选中 + 展开父目录 */
+  const [pendingNote, setPendingNote] = useState<{ id: string; ts: number } | null>(null);
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
   const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(
@@ -393,8 +412,15 @@ export function App() {
   useEffect(() => {
     api.listWorkspaces().then(setRegistry);
     api.getData().then(setData);
-    api.getTrashItems().then(setTrashItems);
   }, []);
+
+  // 系统窗口标题栏跟随 app 主题深浅切换(Windows 11 immersive dark mode / macOS native)
+  // 与「整体风格一致」要求一致 — 浅色 app 配浅色 chrome,深色 app 配深色 chrome
+  useEffect(() => {
+    getCurrentWindow()
+      .setTheme(themeMode === "dark" ? "dark" : "light")
+      .catch(() => {});
+  }, [themeMode]);
 
   // 文件系统监听：当 workspace_root 可用时启动，目录有变化时自动刷新
   useEffect(() => {
@@ -499,6 +525,34 @@ export function App() {
     setSidebarOpen(false);
   }, []);
 
+  // 关闭工作空间弹窗时统一清理"新建"输入状态
+  const closeWsDropdown = useCallback(() => {
+    setWsDropdownOpen(false);
+    setWsCreating(false);
+    setWsNewName("");
+  }, []);
+
+  // 点击外部 / 按 ESC 关闭工作空间弹窗
+  useEffect(() => {
+    if (!wsDropdownOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (wsPopoverRef.current?.contains(target)) return;
+      if (wsTriggerRef.current?.contains(target)) return;
+      closeWsDropdown();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeWsDropdown();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [wsDropdownOpen, closeWsDropdown]);
+
   const handleCreateWorkspace = useCallback(async () => {
     if (!wsNewName.trim()) {
       setWsCreating(true);
@@ -524,6 +578,49 @@ export function App() {
     setDialog({ type: "none" });
   }, []);
 
+  // ── 项目右键菜单 ────────────────────────────────────────
+  const handleProjectContextMenu = useCallback(
+    (e: React.MouseEvent, project: Project) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setProjectMenu({ x: e.clientX, y: e.clientY, project });
+    },
+    []
+  );
+
+  const closeProjectMenu = useCallback(() => setProjectMenu(null), []);
+
+  const handleProjectRenameConfirm = useCallback(
+    async (projectId: string, newName: string) => {
+      try {
+        setData(await api.renameProject(projectId, newName));
+        setDialog({ type: "none" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        window.alert(`重命名失败：${msg}`);
+      }
+    },
+    []
+  );
+
+  const handleProjectDeleteConfirm = useCallback(
+    async (projectId: string) => {
+      try {
+        const next = await api.deleteProject(projectId);
+        setData(next);
+        if (activeProjectId === projectId) {
+          setActiveProjectId(null);
+          setView("home");
+        }
+        setDialog({ type: "none" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        window.alert(`删除失败：${msg}`);
+      }
+    },
+    [activeProjectId]
+  );
+
   const handleMigrateRoot = useCallback(
     async (oldRoot: string, newRoot: string, migrate: boolean) => {
       setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
@@ -531,27 +628,6 @@ export function App() {
     },
     []
   );
-
-  const handleDeleteProject = useCallback(async (projectId: string) => {
-    setData(await api.deleteProject(projectId));
-    setTrashItems(await api.getTrashItems());
-  }, []);
-
-  const handleRestoreProject = useCallback(async (trashItemId: string) => {
-    setData(await api.restoreProject(trashItemId));
-    setTrashItems(await api.getTrashItems());
-  }, []);
-
-  const handlePermanentDelete = useCallback(async (trashItemId: string) => {
-    await api.permanentlyDeleteTrashItem(trashItemId);
-    setTrashItems(await api.getTrashItems());
-  }, []);
-
-  const handleEmptyTrash = useCallback(async () => {
-    await api.emptyTrash();
-    setTrashItems([]);
-    setTrashConfirmOpen(false);
-  }, []);
 
   // 分类管理
   function openEditCategory(index: number, name: string) {
@@ -718,6 +794,7 @@ export function App() {
                     : "project-shortcut-row"
                 }
                 key={project.id}
+                onContextMenu={(e) => handleProjectContextMenu(e, project)}
               >
                 <button
                   className="project-shortcut-main"
@@ -729,15 +806,17 @@ export function App() {
                   <Star size={15} fill={project.pinned ? "currentColor" : "none"} />
                   <span>{project.name}</span>
                 </button>
+                {project.pinned && (
+                  <button
+                    className="side-icon-button"
+                    onClick={() => api.togglePin(project.id).then(setData)}
+                    title={t.unpinned}
+                  >
+                    <Pin size={14} />
+                  </button>
+                )}
                 <button
-                  className="side-icon-button"
-                  onClick={() => api.togglePin(project.id).then(setData)}
-                  title={t.pinned}
-                >
-                  <Pin size={14} />
-                </button>
-                <button
-                  className="side-icon-button"
+                  className="side-icon-button project-row-folder"
                   onClick={() => api.openFolder(project.path)}
                   title={t.openProjectFolder}
                 >
@@ -751,24 +830,21 @@ export function App() {
         {/* 工作空間切換 */}
         <div className="sidebar-footer">
           <button
-            className="sidebar-theme-btn"
-            onClick={() => setThemeMode(themeMode === "light" ? "dark" : "light")}
-            title={themeMode === "light" ? t.dark : t.light}
+            ref={wsTriggerRef}
+            className={`sidebar-ws-btn${wsDropdownOpen ? " open" : ""}`}
+            onClick={() => setWsDropdownOpen(!wsDropdownOpen)}
           >
-            {themeMode === "light" ? <Moon size={15} /> : <Sun size={15} />}
-          </button>
-          <button className="sidebar-ws-btn" onClick={() => setWsDropdownOpen(!wsDropdownOpen)}>
             <Database size={14} />
             <span>
               {registry?.workspaces.find((w) => w.id === registry.activeWorkspaceId)?.name ||
                 t.appName}
             </span>
-            <ChevronDown size={13} />
+            <ChevronDown size={13} className="sidebar-ws-chevron" />
           </button>
         </div>
 
         {wsDropdownOpen && registry && (
-          <div className="workspace-popover">
+          <div className="workspace-popover" ref={wsPopoverRef}>
             <div className="popover-header">{t.workspaceSwitch}</div>
             {registry.workspaces.map((ws) => (
               <button
@@ -778,11 +854,6 @@ export function App() {
               >
                 <Archive size={15} />
                 <span>{ws.name}</span>
-                {ws.id === registry.activeWorkspaceId && (
-                  <span className="ws-check">
-                    <Check size={13} />
-                  </span>
-                )}
               </button>
             ))}
             <button className="ws-item ws-create" onClick={() => setWsCreating(true)}>
@@ -903,6 +974,7 @@ export function App() {
             onPreviewFile={handlePreviewFile}
             fileChangeEpoch={fileChangeEpoch}
             initialCategory={navigatedCategory}
+            highlightFile={highlightFile}
           />
         )}
 
@@ -945,15 +1017,18 @@ export function App() {
 
         {view === "trash" && (
           <TrashView
-            trashItems={trashItems}
             t={t}
-            onRestore={handleRestoreProject}
-            onPermanentDelete={handlePermanentDelete}
-            onEmptyTrash={() => setTrashConfirmOpen(true)}
+            workspaceKey={registry?.activeWorkspaceId}
+            onProjectRestored={async () => {
+              setData(await api.getData());
+            }}
+            onProjectsTrashChanged={async () => {
+              setData(await api.getData());
+            }}
           />
         )}
 
-        {view === "notes" && <NotesView language={language} />}
+        {view === "notes" && <NotesView language={language} initialNote={pendingNote} />}
       </main>
 
       {/* 彈窗 */}
@@ -986,6 +1061,25 @@ export function App() {
         />
       )}
 
+      {dialog.type === "rename-project" && (
+        <RenameProjectDialog
+          currentName={dialog.currentName}
+          onConfirm={(name) => handleProjectRenameConfirm(dialog.projectId, name)}
+          onClose={() => setDialog({ type: "none" })}
+        />
+      )}
+
+      {dialog.type === "delete-project" && (
+        <ConfirmDangerDialog
+          title="删除项目"
+          message={`确定删除项目「${dialog.name}」？该项目会进入回收站，30 天后自动永久删除。`}
+          confirmLabel="删除"
+          cancelLabel="取消"
+          onConfirm={() => handleProjectDeleteConfirm(dialog.projectId)}
+          onClose={() => setDialog({ type: "none" })}
+        />
+      )}
+
       {dialog.type === "migrate-root" && (
         <MigrateRootDialog
           oldRoot={dialog.oldRoot}
@@ -994,14 +1088,6 @@ export function App() {
           t={t}
           onConfirm={(migrate) => handleMigrateRoot(dialog.oldRoot, dialog.newRoot, migrate)}
           onClose={() => setDialog({ type: "none" })}
-        />
-      )}
-
-      {trashConfirmOpen && (
-        <TrashConfirmDialog
-          t={t}
-          onConfirm={handleEmptyTrash}
-          onClose={() => setTrashConfirmOpen(false)}
         />
       )}
 
@@ -1050,7 +1136,64 @@ export function App() {
           }
         }}
         onPreviewFile={handlePreviewFile}
+        onNavigateToFile={(projectName, category, filePath) => {
+          const project = data.projects.find((p) => p.name === projectName);
+          if (!project) return;
+          setNavigatedCategory(category ? { category, ts: Date.now() } : null);
+          setActiveProjectId(project.id);
+          setView("projects");
+          setHighlightFile({ path: filePath, ts: Date.now() });
+        }}
+        onSelectNote={(noteId) => {
+          setView("notes");
+          setPendingNote({ id: noteId, ts: Date.now() });
+        }}
       />
+
+      {projectMenu && (
+        <ContextMenu
+          x={projectMenu.x}
+          y={projectMenu.y}
+          onClose={closeProjectMenu}
+          items={
+            [
+              {
+                label: projectMenu.project.pinned ? t.unpinned : t.pinned,
+                icon: projectMenu.project.pinned ? <PinOff size={14} /> : <Pin size={14} />,
+                onClick: () => {
+                  void api.togglePin(projectMenu.project.id).then(setData);
+                },
+              },
+              {
+                label: t.rename,
+                onClick: () =>
+                  setDialog({
+                    type: "rename-project",
+                    projectId: projectMenu.project.id,
+                    currentName: projectMenu.project.name,
+                  }),
+              },
+              {
+                label: t.openContainingFolder,
+                onClick: () => {
+                  void api.openFolder(projectMenu.project.path);
+                },
+              },
+              { divider: true },
+              {
+                label: t.deleteAction,
+                danger: true,
+                onClick: () =>
+                  setDialog({
+                    type: "delete-project",
+                    projectId: projectMenu.project.id,
+                    name: projectMenu.project.name,
+                  }),
+              },
+            ] satisfies ContextMenuItem[]
+          }
+        />
+      )}
     </div>
   );
 }

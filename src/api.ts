@@ -13,6 +13,7 @@ import type {
   CategoryFile,
   WorkspaceRegistry,
   TrashItem,
+  TrashedFile,
   NoteMeta,
   NoteTreeNode,
   TrashedNote,
@@ -57,7 +58,7 @@ export const api: ArchiveApi = {
   createWorkspace: (name) => invoke<WorkspaceRegistry>("create_workspace", { name }),
   switchWorkspace: (workspaceId) => invoke<AppData>("switch_workspace", { workspaceId }),
   renameWorkspace: (workspaceId, name) =>
-    invoke<WorkspaceRegistry>("rename_workspace", { workspaceId, name }),
+    invoke<WorkspaceRegistry>("rename_workspace", { workspaceId, newName: name }),
   deleteWorkspace: (workspaceId) => invoke<WorkspaceRegistry>("delete_workspace", { workspaceId }),
   getAutostartEnabled: () => invoke<boolean>("get_autostart_enabled"),
   setAutostartEnabled: (enabled) => invoke<void>("set_autostart_enabled", { enabled }),
@@ -66,9 +67,15 @@ export const api: ArchiveApi = {
   // 回收站
   getTrashItems: () => invoke<TrashItem[]>("get_trash_items"),
   deleteProject: (projectId) => invoke<AppData>("delete_project", { projectId }),
+  renameProject: (projectId, newName) =>
+    invoke<AppData>("rename_project", { projectId, newName }),
   restoreProject: (trashItemId) => invoke<AppData>("restore_project", { trashItemId }),
   permanentlyDeleteTrashItem: (trashItemId) => invoke<void>("permanently_delete_trash_item", { trashItemId }),
   emptyTrash: () => invoke<void>("empty_trash"),
+  listTrashedFiles: () => invoke<TrashedFile[]>("list_trashed_files"),
+  restoreTrashedFile: (fileId) => invoke<string>("restore_trashed_file", { fileId }),
+  permanentlyDeleteTrashedFile: (fileId) =>
+    invoke<void>("permanently_delete_trashed_file", { fileId }),
   // 通知
   sendNotification: (title, body) => invoke<void>("send_notification", { title, body }),
   // 文件预览
@@ -76,7 +83,13 @@ export const api: ArchiveApi = {
   readFileBinary: (filePath: string) => invoke<string>("read_file_binary", { filePath }),
   getPreviewInfo: (filePath: string) => invoke<PreviewInfo>("get_preview_info", { filePath }),
   // 文件操作
-  deleteFile: (filePath: string) => invoke<void>("delete_file", { filePath }),
+  deleteFile: (filePath, context) =>
+    invoke<void>("delete_file", {
+      filePath,
+      projectId: context?.projectId,
+      projectName: context?.projectName,
+      category: context?.category,
+    }),
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("copy_file_to", { input }),
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("move_file_to", { input }),
   readClipboardFiles: () => invoke<string[]>("read_clipboard_files"),

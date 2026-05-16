@@ -92,10 +92,23 @@
   box-sizing: border-box;
 }
 
+/* 锁死整窗高度,禁止系统层面的滚动。
+   之前 html/body/#root 没显式约束,默认 height:auto + overflow:visible,
+   一旦有任何元素(banner/warning/工具栏)总高 > 100vh,整窗就可以下滑,
+   滚动出来的空白会让用户看到 body 颜色与窗口边框之间一条带状缝隙。 */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   font-size: 16px;
   line-height: 1.5;
+  /* 让 body 颜色和 .app-shell 一致,即使因 1px 误差短暂露出 body,也不会出现「跟主体不同色的边」 */
+  background: var(--bg, #f7f6f3);
 }
 
 /* ── Typography System（Notion 文档式层级） ─────────────── */
@@ -292,12 +305,19 @@ button {
   cursor: pointer;
   transition:
     background 0.15s,
-    color 0.15s;
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .sidebar-ws-btn:hover {
   background: var(--sidebar-hover);
   color: var(--text);
+}
+
+.sidebar-ws-btn.open {
+  background: var(--sidebar-hover);
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .sidebar-ws-btn span {
@@ -308,83 +328,174 @@ button {
   text-overflow: ellipsis;
 }
 
+.sidebar-ws-chevron {
+  transition: transform 0.18s ease;
+  opacity: 0.7;
+}
+
+.sidebar-ws-btn.open .sidebar-ws-chevron {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
 /* ── 工作空間彈出層 ──────────────────────── */
 .workspace-popover {
   position: absolute;
-  bottom: 52px;
-  left: 4px;
-  right: 4px;
+  bottom: 56px;
+  left: 8px;
+  right: 8px;
   background: var(--surface);
   border: 0.5px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: 10px;
   padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   z-index: 100;
-  box-shadow: 0 4px 16px rgba(15, 15, 15, 0.1);
+  box-shadow:
+    0 1px 2px rgba(15, 15, 15, 0.04),
+    0 8px 24px rgba(15, 15, 15, 0.12),
+    0 16px 48px rgba(15, 15, 15, 0.08);
+  transform-origin: bottom center;
+  animation: ws-popover-in 0.16s ease-out;
+}
+
+.app-shell.theme-dark .workspace-popover {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.4),
+    0 16px 48px rgba(0, 0, 0, 0.25);
+}
+
+@keyframes ws-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .popover-header {
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 4px 10px 6px;
+  letter-spacing: 0.02em;
+  padding: 6px 10px 4px;
 }
 
 .ws-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 10px;
+  padding: 7px 10px;
   border: none;
   background: none;
   color: var(--text);
-  border-radius: var(--radius-md);
+  border-radius: 6px;
   font-size: 13px;
   text-align: left;
   width: 100%;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.ws-item > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: color 0.12s;
+}
+
+.ws-item > span {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ws-item:hover {
   background: var(--sidebar-hover);
 }
 
+.ws-item:hover > svg {
+  color: var(--text);
+}
+
 .ws-item.active {
-  background: var(--accent);
-  color: #ffffff;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-weight: 600;
+}
+
+.ws-item.active > svg {
+  color: var(--accent-strong);
+}
+
+.ws-item.active::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .ws-check {
   margin-left: auto;
-  opacity: 0.7;
+  color: var(--accent-strong);
+  display: flex;
+  align-items: center;
 }
 
 .ws-item.ws-create {
-  border-top: 0.5px solid var(--border);
   margin-top: 4px;
-  padding-top: 10px;
   color: var(--accent);
+  font-weight: 500;
+}
+
+.ws-item.ws-create::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: -2px;
+  height: 0.5px;
+  background: var(--border);
+}
+
+.ws-item.ws-create > svg {
+  color: var(--accent);
+}
+
+.ws-item.ws-create:hover {
+  background: var(--accent-soft);
 }
 
 .ws-create-input {
   display: flex;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 6px 6px 4px;
 }
 
 .ws-create-input input {
   flex: 1;
-  padding: 6px 8px;
+  min-width: 0;
+  padding: 6px 10px;
   border: 0.5px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   background: var(--surface-soft);
   color: var(--text);
   font-size: 13px;
   outline: none;
+  transition: border-color 0.12s;
 }
 
 .ws-create-input input:focus {
@@ -436,6 +547,11 @@ nav {
   border-radius: var(--radius-md);
   min-height: 36px;
   padding: 2px;
+}
+
+/* 文件夹按钮固定在第 3 列，未置顶时 Pin 按钮位置空着，icon 始终对齐 */
+.project-shortcut-row > .project-row-folder {
+  grid-column: 3;
 }
 
 .project-shortcut-row.active,
@@ -716,9 +832,33 @@ nav {
 .page {
   flex: 1;
   overflow: auto;
-  padding: 24px;
+  /* 四边 padding 全部清零 — 参考便签视图的边到边布局,
+     内容直接铺满 .main 内除 topbar 之外的全部空间,与左侧 sidebar 严密对齐 */
+  padding: 0;
   background: var(--bg);
   min-width: 0;
+}
+
+/* 贴 .page 四边的卡片圆角全部拍平 — 否则 8px border-radius 的拐角
+   会在四角各透出一小块 --bg 颜色,看起来仍像有缝隙。
+   覆盖直接子项 + 一级网格容器(.metric-grid / .split)的子项 */
+.page > *,
+.page > .metric-grid > *,
+.page > .split > * {
+  border-radius: 0 !important;
+}
+
+/* 首页/收件箱/回收站/设置等走 .page 容器的视图:
+   卡片去掉 0.5px 盒式 border,与便签视图保持一致(便签只用 sidebar border-right
+   做唯一分隔线,不在卡片四周描边)。视觉层次靠 background-color 区分。
+   注意:projects-page 内部已通过 .workspace-grid > * { border:none } 单独处理。 */
+.page .page-header,
+.page .hero-band,
+.page .panel,
+.page .metric,
+.page .trash-item,
+.page .inbox-row {
+  border: none !important;
 }
 
 .hero-band {
@@ -946,10 +1086,12 @@ small,
 .project-list-panel {
   background: var(--surface);
   border-radius: var(--radius-lg);
-  padding: 12px;
-  align-self: start;
-  position: sticky;
-  top: 0;
+  /* 顶部不留 padding,「分类」title 贴顶,与便签 sidebar 一致 */
+  padding: 0 12px 12px;
+  /* 取消原本 align-self:start + sticky 的「短侧栏」效果,改为撑满全高 + 内部滚动 */
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
   border: 0.5px solid var(--border);
 }
 
@@ -961,7 +1103,15 @@ small,
   color: var(--accent-strong);
   font-size: 13px;
   font-weight: 700;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  /* h2 行高约 28px,这里同步成相同高度,让分类侧栏的「分类 + 折叠按钮」
+     和右侧主面板的 h2 标题视觉对齐到同一基线 */
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 与 .panel padding-top: 0 配合,自身提供一点上 padding,避免完全贴顶 */
+  padding-top: 8px;
 }
 
 .project-detail {
@@ -991,11 +1141,22 @@ small,
 .workspace-grid {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
-  gap: 16px;
+  /* 参考便签视图: 两个 panel 直接贴满,只用单 1px 分隔线 */
+  gap: 0;
   align-items: stretch;
   flex: 1;
   width: 100%;
   transition: grid-template-columns 0.2s ease;
+}
+
+/* 拍平两个 panel 的圆角和外边框,改用 .project-list-panel 的 border-right
+   作为视觉分隔,与便签视图(sidebar border-right + editor area)一致 */
+.workspace-grid > * {
+  border-radius: 0 !important;
+  border: none !important;
+}
+.workspace-grid > .project-list-panel {
+  border-right: 1px solid var(--border) !important;
 }
 
 .workspace-grid.category-collapsed {
@@ -1009,7 +1170,10 @@ small,
 .workspace-grid > .panel {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 144px);
+  /* 改成最少高度 100%,撑满 .workspace-grid 的可用高度,不再用 100vh-144px 的硬编码 */
+  min-height: 100%;
+  /* 参考便签编辑区:顶部不留 16px 空白,让标题栏直接贴到 .page 顶边 */
+  padding: 0 16px 16px;
 }
 
 /* ── 分類側欄折疊 ────────────────────────── */
@@ -1072,6 +1236,10 @@ small,
 .category-list {
   display: grid;
   gap: 8px;
+  /* 撑满 .project-list-panel 剩余空间,长列表时自身滚动,不影响外层布局 */
+  flex: 1;
+  overflow-y: auto;
+  align-content: start;
 }
 
 .category-row {
@@ -1692,6 +1860,46 @@ small,
   padding-left: 7px;
 }
 
+/* Spotlight 跳转高亮:闪烁背景 + 一圈 ripple-glow + 轻微缩放,持续 1.5s
+   - background-color 用 transparent → accent-soft → transparent 做 3 段闪烁
+   - box-shadow 做向外扩散的光晕(用 0 → +12px 模拟波纹)
+   - transform 微缩放(1 → 1.015 → 1)做呼吸感
+   注意:动画结束后由 JS 移除 class,样式自然回到默认 */
+.file-table-row.spotlight-pulse {
+  animation: file-row-spotlight 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes file-row-spotlight {
+  0% {
+    background-color: transparent;
+    box-shadow: 0 0 0 0 var(--accent-soft);
+    transform: scale(1);
+  }
+  15% {
+    background-color: var(--accent-soft);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+    transform: scale(1.015);
+  }
+  45% {
+    background-color: var(--accent-soft);
+    box-shadow: 0 0 0 0 transparent;
+    transform: scale(1);
+  }
+  60% {
+    background-color: transparent;
+  }
+  75% {
+    background-color: var(--accent-soft);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 12px transparent;
+    transform: scale(1);
+  }
+}
+
 /* 文件夹行（列表中的目录项） */
 .file-table-row.is-directory .file-name-text {
   font-weight: 600;
@@ -2267,39 +2475,163 @@ input {
 }
 
 /* ── Category Edit Modal ───────────────── */
+.category-edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .category-edit-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 300px;
+  gap: 4px;
+  max-height: 320px;
   overflow-y: auto;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 8px;
 }
 
 .category-edit-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: var(--bg);
-  border-radius: 6px;
+  padding: 6px 8px 6px 12px;
+  background: transparent;
+  border-radius: 8px;
+  transition:
+    background 0.12s,
+    box-shadow 0.12s;
 }
 
-.category-edit-row span {
-  flex: 1;
+.category-edit-row:hover {
+  background: var(--surface-soft);
 }
 
-.category-edit-row input {
+.category-edit-row.editing {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.category-edit-name {
   flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.category-edit-input {
+  flex: 1;
+  min-width: 0;
   padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: 0.5px solid var(--border);
+  border-radius: 6px;
   background: var(--surface);
   color: var(--text);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.category-edit-input:focus {
+  border-color: var(--accent);
 }
 
 .category-edit-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
+}
+
+.category-edit-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.category-edit-icon-btn:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.category-edit-icon-btn.primary-hover:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.category-edit-icon-btn.danger-hover:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.category-edit-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.category-edit-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.category-edit-add:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  border-style: solid;
+  color: var(--accent-strong);
+}
+
+.category-edit-add svg {
+  flex-shrink: 0;
+}
+
+.category-edit-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.category-edit-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.category-edit-empty p {
+  margin: 0;
+  font-size: 13px;
 }
 
 .danger-hover:hover {
@@ -3527,6 +3859,19 @@ input {
   white-space: nowrap;
 }
 
+/* 便签结果的正文匹配片段(snippet),后端 search_notes 已经把命中前后裁短了
+   这里允许两行展示,超出折断为省略号 */
+.spotlight-item-snippet {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
 .spotlight-item-size {
   font-size: 12px;
   color: var(--muted);
@@ -3708,8 +4053,12 @@ input {
 .notes-toolbar {
   display: flex;
   gap: 6px;
-  padding: 8px 8px 6px;
+  /* 上下 padding 收紧,让 sidebar 顶部搜索条总高度 = padding(3+3) + 搜索框 30px = 36px,
+     与右侧 .notes-editor-topbar / .vditor-toolbar 的 36px 完全对齐 */
+  padding: 3px 8px;
   align-items: center;
+  min-height: 36px;
+  box-sizing: border-box;
 }
 
 /* 单一行 icon 按钮:统一尺寸,与搜索框同高对齐 */
@@ -4161,6 +4510,9 @@ input {
   gap: 6px;
   padding: 0 10px;
   height: 30px;
+  /* 不让它撑满 sidebar 整宽,留一点右侧呼吸 */
+  max-width: calc(100% - 16px);
+  margin-right: 8px;
   background: var(--surface-soft);
   border: 1px solid transparent;
   border-radius: var(--radius-sm, 6px);
@@ -4402,15 +4754,33 @@ input {
      这里压成 0 才能让 .notes-editor-content 真正受 flex:1 约束去滚动 */
   min-height: 0;
   background: var(--surface);
+  /* topbar 用 position:absolute 浮在 vditor toolbar 之上,需要 area 做定位基准 */
+  position: relative;
 }
 
+/* topbar 与 vditor toolbar 合并到同一行:
+   topbar 改成绝对定位的浮层,不占布局高度;
+   vditor toolbar 加左右内边距,把图标按钮挤到中间,留出两端给 breadcrumb / 操作按钮 */
 .notes-editor-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
-  min-height: 40px;
+  padding: 0 12px;
+  /* 与左侧 .notes-toolbar(min-height:36px) 严密对齐 */
+  height: 36px;
+  border-bottom: none;
+  background: transparent;
+  /* 自身不挡点,只有具体的 meta / actions 子项可点 */
+  pointer-events: none;
+}
+
+.notes-editor-topbar > * {
+  pointer-events: auto;
 }
 
 .notes-editor-meta {
@@ -4512,10 +4882,12 @@ input {
   right: 0 !important;
   z-index: 50;
   background: var(--surface) !important;
-  /* 工具栏高度收紧：原本上下 6px + 图标按钮 32px = 总高 ~46px，太厚遮挡正文。
-     收到 2px 后整体约 32px，更接近 Typora。 */
-  padding: 2px 12px !important;
-  min-height: 32px !important;
+  /* 与左侧 sidebar .notes-toolbar(36px) 对齐;同时给 topbar 的 breadcrumb / 操作按钮留出左右 padding */
+  padding: 0 160px 0 220px !important;
+  min-height: 36px !important;
+  height: 36px !important;
+  display: flex !important;
+  align-items: center !important;
   border-bottom: 1px solid var(--border) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
   opacity: 0;
@@ -4714,34 +5086,183 @@ input {
 .notes-editor-content .vditor-reset code:not(pre code) {
   background: var(--surface-soft) !important;
   color: var(--text) !important;
-  padding: 0.2em 0.4em !important;
-  border-radius: 6px !important;
+  padding: 0.15em 0.4em !important;
+  border-radius: 4px !important;
   border: none !important;
-  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo",
-    "Fira Code", monospace !important;
-  font-size: 85% !important;
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", "Consolas",
+    "Liberation Mono", "Menlo", "Fira Code", monospace !important;
+  font-size: 87% !important;
 }
 
-/* 代码块 — GitHub 浅灰底,无边框 */
+/* 代码块 — Notion 风：圆角 + 顶部 toolbar 区(语言标签 + 复制按钮) */
 .notes-editor-content .vditor-reset pre {
-  background: var(--surface-soft) !important;
-  border: none !important;
-  border-radius: 6px !important;
-  padding: 16px !important;
-  margin: 0 0 16px !important;
-  overflow: auto !important;
-  line-height: 1.45 !important;
+  position: relative;
+  background: #f7f7f5 !important;
+  border: 1px solid rgba(15, 15, 15, 0.06) !important;
+  border-radius: 8px !important;
+  padding: 36px 16px 14px !important;
+  margin: 10px 0 !important;
+  overflow-x: auto;
+  line-height: 1.55 !important;
+}
+
+.app-shell.theme-dark .notes-editor-content .vditor-reset pre {
+  background: #1d1d1d !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
 }
 
 .notes-editor-content .vditor-reset pre code {
-  background: none !important;
+  background: transparent !important;
   padding: 0 !important;
   border: none !important;
-  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo",
-    "Fira Code", monospace !important;
-  font-size: 85% !important;
-  line-height: 1.45 !important;
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", "Consolas",
+    "Liberation Mono", "Menlo", "Fira Code", monospace !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
   color: var(--text) !important;
+  display: block;
+}
+
+/* 顶部 toolbar 区分隔线 */
+.notes-editor-content .vditor-reset pre::after {
+  content: "";
+  position: absolute;
+  top: 30px;
+  left: 12px;
+  right: 12px;
+  height: 1px;
+  background: rgba(15, 15, 15, 0.06);
+  pointer-events: none;
+}
+
+.app-shell.theme-dark .notes-editor-content .vditor-reset pre::after {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* 语言标签 — 顶部左 */
+.notes-editor-content .vditor-reset pre::before {
+  content: "TEXT";
+  position: absolute;
+  top: 7px;
+  left: 14px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
+}
+
+/* 常见语言显示对应标签（hljs 给 code 加 language-xxx class） */
+.notes-editor-content .vditor-reset pre:has(code.language-javascript)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-js)::before { content: "JAVASCRIPT"; }
+.notes-editor-content .vditor-reset pre:has(code.language-typescript)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-ts)::before { content: "TYPESCRIPT"; }
+.notes-editor-content .vditor-reset pre:has(code.language-jsx)::before { content: "JSX"; }
+.notes-editor-content .vditor-reset pre:has(code.language-tsx)::before { content: "TSX"; }
+.notes-editor-content .vditor-reset pre:has(code.language-python)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-py)::before { content: "PYTHON"; }
+.notes-editor-content .vditor-reset pre:has(code.language-java)::before { content: "JAVA"; }
+.notes-editor-content .vditor-reset pre:has(code.language-c)::before { content: "C"; }
+.notes-editor-content .vditor-reset pre:has(code.language-cpp)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-c\+\+)::before { content: "C++"; }
+.notes-editor-content .vditor-reset pre:has(code.language-csharp)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-cs)::before { content: "C#"; }
+.notes-editor-content .vditor-reset pre:has(code.language-go)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-golang)::before { content: "GO"; }
+.notes-editor-content .vditor-reset pre:has(code.language-rust)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-rs)::before { content: "RUST"; }
+.notes-editor-content .vditor-reset pre:has(code.language-ruby)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-rb)::before { content: "RUBY"; }
+.notes-editor-content .vditor-reset pre:has(code.language-php)::before { content: "PHP"; }
+.notes-editor-content .vditor-reset pre:has(code.language-swift)::before { content: "SWIFT"; }
+.notes-editor-content .vditor-reset pre:has(code.language-kotlin)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-kt)::before { content: "KOTLIN"; }
+.notes-editor-content .vditor-reset pre:has(code.language-shell)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-bash)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-sh)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-zsh)::before { content: "SHELL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-powershell)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-ps1)::before { content: "POWERSHELL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-sql)::before { content: "SQL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-json)::before { content: "JSON"; }
+.notes-editor-content .vditor-reset pre:has(code.language-yaml)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-yml)::before { content: "YAML"; }
+.notes-editor-content .vditor-reset pre:has(code.language-toml)::before { content: "TOML"; }
+.notes-editor-content .vditor-reset pre:has(code.language-xml)::before { content: "XML"; }
+.notes-editor-content .vditor-reset pre:has(code.language-html)::before { content: "HTML"; }
+.notes-editor-content .vditor-reset pre:has(code.language-css)::before { content: "CSS"; }
+.notes-editor-content .vditor-reset pre:has(code.language-scss)::before { content: "SCSS"; }
+.notes-editor-content .vditor-reset pre:has(code.language-less)::before { content: "LESS"; }
+.notes-editor-content .vditor-reset pre:has(code.language-markdown)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-md)::before { content: "MARKDOWN"; }
+.notes-editor-content .vditor-reset pre:has(code.language-dockerfile)::before { content: "DOCKERFILE"; }
+.notes-editor-content .vditor-reset pre:has(code.language-makefile)::before { content: "MAKEFILE"; }
+.notes-editor-content .vditor-reset pre:has(code.language-r)::before { content: "R"; }
+.notes-editor-content .vditor-reset pre:has(code.language-lua)::before { content: "LUA"; }
+.notes-editor-content .vditor-reset pre:has(code.language-perl)::before { content: "PERL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-haskell)::before,
+.notes-editor-content .vditor-reset pre:has(code.language-hs)::before { content: "HASKELL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-scala)::before { content: "SCALA"; }
+.notes-editor-content .vditor-reset pre:has(code.language-dart)::before { content: "DART"; }
+.notes-editor-content .vditor-reset pre:has(code.language-vue)::before { content: "VUE"; }
+.notes-editor-content .vditor-reset pre:has(code.language-svelte)::before { content: "SVELTE"; }
+.notes-editor-content .vditor-reset pre:has(code.language-graphql)::before { content: "GRAPHQL"; }
+.notes-editor-content .vditor-reset pre:has(code.language-diff)::before { content: "DIFF"; }
+
+/* 复制按钮（由 JS 注入到 pre 内部）— Notion 风：hover 时显示 */
+.notes-codeblock-copy {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  z-index: 2;
+  user-select: none;
+}
+
+.notes-editor-content .vditor-reset pre:hover .notes-codeblock-copy {
+  opacity: 1;
+}
+
+.notes-codeblock-copy:hover {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.app-shell.theme-dark .notes-codeblock-copy:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.notes-codeblock-copy.copied {
+  opacity: 1;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* 关掉残留的 hljs 行号显示（若 vditor 仍生成） */
+.notes-editor-content .hljs-ln-numbers,
+.notes-editor-content .code-block-line-num {
+  display: none !important;
 }
 
 /* 表格 — GitHub 网格 */

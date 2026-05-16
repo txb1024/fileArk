@@ -66,6 +66,8 @@ interface ProjectsViewProps {
   onPreviewFile: (path: string, name: string) => void;
   fileChangeEpoch: number;
   initialCategory?: { category: string; ts: number } | null;
+  /** Spotlight 跳转到指定文件:滚动到该行 + 闪烁高亮(配合 initialCategory 一起改) */
+  highlightFile?: { path: string; ts: number } | null;
 }
 
 export function ProjectsView({
@@ -79,6 +81,7 @@ export function ProjectsView({
   onPreviewFile,
   fileChangeEpoch,
   initialCategory,
+  highlightFile,
 }: ProjectsViewProps) {
   const [selectedCategory, setSelectedCategory] = useState(
     initialCategory?.category || data.settings.categories[0] || ""
@@ -152,6 +155,44 @@ export function ProjectsView({
       setSelectedCategory(initialCategory.category);
     }
   }, [initialCategory]);
+
+  // Spotlight 跳转到指定文件:分类切换 + 文件列表刷新完成后,
+  // 在 DOM 里按 data-file-path 找到对应行 -> 滚动到视野中央 -> 加 pulse 动画
+  useEffect(() => {
+    if (!highlightFile) return;
+    const path = highlightFile.path;
+    // 文件列表是异步加载/重渲的,用 rAF + 短轮询等行节点出现(最多等 ~1s)
+    let cancelled = false;
+    let attempts = 0;
+    const escapeAttr = (s: string) => s.replace(/["\\]/g, "\\$&");
+
+    const tryLocate = () => {
+      if (cancelled) return;
+      const row = document.querySelector<HTMLElement>(
+        `[data-file-path="${escapeAttr(path)}"]`,
+      );
+      if (row) {
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        // 先移除旧的(若上次还没结束)再加,触发动画重新跑
+        row.classList.remove("spotlight-pulse");
+        // 强制 reflow,让 remove + add 之间不会被浏览器合批
+        void row.offsetWidth;
+        row.classList.add("spotlight-pulse");
+        window.setTimeout(() => {
+          row.classList.remove("spotlight-pulse");
+        }, 1500);
+        return;
+      }
+      attempts += 1;
+      if (attempts < 30) window.setTimeout(tryLocate, 50);
+    };
+    // 初次延迟一帧,等 setSelectedCategory 与文件列表 useEffect 都跑过
+    const t0 = window.setTimeout(tryLocate, 60);
+    return () => {
+      cancelled = true;
+      clearTimeout(t0);
+    };
+  }, [highlightFile]);
 
   // 文件变更时：仅刷新分类计数，不重置选中分类
   useEffect(() => {
@@ -390,7 +431,13 @@ export function ProjectsView({
   async function handleDeleteSelected() {
     if (selectedFiles.size === 0) return;
     for (const path of selectedFiles) {
-      await api.deleteFile(path).catch(() => {});
+      await api
+        .deleteFile(path, {
+          projectId: activeProject.id,
+          projectName: activeProject.name,
+          category: selectedCategory,
+        })
+        .catch(() => {});
     }
     clearSelection();
     await refreshCategoryFiles();
@@ -840,7 +887,11 @@ export function ProjectsView({
           confirmLabel={t.deleteFile}
           cancelLabel={t.migrateCancel}
           onConfirm={async () => {
-            await api.deleteFile(pendingDeleteFile.path);
+            await api.deleteFile(pendingDeleteFile.path, {
+              projectId: activeProject.id,
+              projectName: activeProject.name,
+              category: selectedCategory,
+            });
             await refreshCategoryFiles();
             setDeleteConfirmOpen(false);
             setPendingDeleteFile(null);
@@ -856,7 +907,7 @@ export function ProjectsView({
       {batchDeleteOpen && (
         <ConfirmDangerDialog
           title="批量删除"
-          message={`确定要删除选中的 ${selectedFiles.size} 个文件吗？此操作不可恢复。`}
+          message={`选中的 ${selectedFiles.size} 个文件会移入回收站，保留 30 天后自动永久删除。`}
           confirmLabel="删除"
           cancelLabel={t.migrateCancel}
           onConfirm={handleDeleteSelected}
@@ -901,6 +952,7 @@ function FileRow({
   const icon = getFileIcon(file.name, file.isDirectory, fileViewMode === "grid" ? 32 : 16);
   return (
     <div
+      data-file-path={file.path}
       className={`file-table-row file-scale-${fileScale} ${file.isDirectory ? "is-directory" : ""} ${isSelected ? "selected" : ""} ${draggingFile?.path === file.path ? "file-dragging" : ""}`}
       draggable={!file.isDirectory}
       onDragStart={(e) => {

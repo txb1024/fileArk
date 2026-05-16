@@ -68,6 +68,11 @@ fn switch_workspace(app: tauri::AppHandle, workspace_id: String) -> Result<AppDa
     }
     registry.active_workspace_id = workspace_id;
     write_registry(&app, &registry)?;
+    // 切换工作空间后,把旧版本残留的全局 trash.json / trashed_files/ 挪到新空间下
+    // (只在迁移期生效;新建工作空间不会触发,因为路径已不冲突)
+    let _ = store::migrate_legacy_trash_to_workspace(&app);
+    // 顺手做一次 30 天清理
+    let _ = store::cleanup_expired_trash(&app);
     read_data(&app)
 }
 
@@ -194,6 +199,75 @@ fn mark_project_opened(app: tauri::AppHandle, project_id: String) -> Result<AppD
         .map(|p| {
             if p.id == project_id {
                 Project { last_opened_at: Some(ts.clone()), ..p }
+            } else {
+                p
+            }
+        })
+        .collect();
+    write_data(&app, &data)?;
+    Ok(data)
+}
+
+#[tauri::command]
+fn rename_project(
+    app: tauri::AppHandle,
+    project_id: String,
+    new_name: String,
+) -> Result<AppData, String> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    if trimmed.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
+        return Err("名称包含非法字符".to_string());
+    }
+
+    let mut data = read_data(&app)?;
+    let target = data
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .cloned()
+        .ok_or_else(|| "找不到项目".to_string())?;
+
+    if target.name == trimmed {
+        return Ok(data);
+    }
+
+    if data
+        .projects
+        .iter()
+        .any(|p| p.id != project_id && p.name == trimmed)
+    {
+        return Err("已存在同名项目".to_string());
+    }
+
+    let old_path = Path::new(&target.path);
+    let mut new_project_path = target.path.clone();
+
+    if old_path.exists() {
+        if let Some(parent) = old_path.parent() {
+            let candidate = parent.join(trimmed);
+            if candidate.exists() {
+                return Err("目标路径已存在同名文件夹".to_string());
+            }
+            fs::rename(old_path, &candidate).map_err(|e| format!("重命名文件夹失败: {}", e))?;
+            new_project_path = candidate.to_string_lossy().to_string();
+        }
+    }
+
+    let ts = utils::now_rfc3339();
+    data.projects = data
+        .projects
+        .into_iter()
+        .map(|p| {
+            if p.id == project_id {
+                Project {
+                    name: trimmed.to_string(),
+                    path: new_project_path.clone(),
+                    updated_at: ts.clone(),
+                    ..p
+                }
             } else {
                 p
             }
@@ -426,16 +500,23 @@ fn open_folder(_app: tauri::AppHandle, folder_path: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn delete_file(file_path: String) -> Result<(), String> {
+fn delete_file(
+    app: tauri::AppHandle,
+    file_path: String,
+    project_id: Option<String>,
+    project_name: Option<String>,
+    category: Option<String>,
+) -> Result<(), String> {
     let path = Path::new(&file_path);
     if !path.exists() {
         return Err("文件不存在".to_string());
     }
-    if path.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(path).map_err(|e| e.to_string())
-    }
+    // 移入回收站(而非真删);30 天后被 cleanup_expired_trash 自动永久清理
+    let trashed = store::move_file_into_trash(&app, path, project_id, project_name, category)?;
+    let mut trash = store::read_trash(&app)?;
+    trash.files.push(trashed);
+    store::write_trash(&app, &trash)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -870,6 +951,8 @@ fn delete_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_trashed_notes(app: tauri::AppHandle) -> Result<Vec<TrashedNote>, String> {
+    // 顺手做一次 30 天清理（便签/项目/文件都会被瘦身）
+    let _ = store::cleanup_expired_trash(&app);
     let index = read_notes_index(&app)?;
     Ok(index.trash)
 }
@@ -995,8 +1078,26 @@ fn read_clipboard_files() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 fn get_trash_items(app: tauri::AppHandle) -> Result<Vec<TrashItem>, String> {
+    let _ = store::cleanup_expired_trash(&app);
     let trash = read_trash(&app)?;
     Ok(trash.items)
+}
+
+#[tauri::command]
+fn list_trashed_files(app: tauri::AppHandle) -> Result<Vec<TrashedFile>, String> {
+    let _ = store::cleanup_expired_trash(&app);
+    let trash = read_trash(&app)?;
+    Ok(trash.files)
+}
+
+#[tauri::command]
+fn restore_trashed_file(app: tauri::AppHandle, file_id: String) -> Result<String, String> {
+    store::restore_trashed_file_entry(&app, &file_id)
+}
+
+#[tauri::command]
+fn permanently_delete_trashed_file(app: tauri::AppHandle, file_id: String) -> Result<(), String> {
+    store::permanently_delete_trashed_file_entry(&app, &file_id)
 }
 
 #[tauri::command]
@@ -1218,6 +1319,14 @@ fn main() {
             let icon = app.default_window_icon().cloned().unwrap();
             let app_handle = app.handle().clone();
 
+            // 启动时跑一次 30 天清理(过期的项目 / 项目文件 / 便签都会被永久移除)
+            // 顺带把旧版本共享的 trash.json 迁移到当前工作空间专属路径下
+            let cleanup_handle = app_handle.clone();
+            std::thread::spawn(move || {
+                let _ = store::migrate_legacy_trash_to_workspace(&cleanup_handle);
+                let _ = store::cleanup_expired_trash(&cleanup_handle);
+            });
+
             let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(&app_handle)?;
             let hide_item = MenuItemBuilder::with_id("hide", "最小化到托盘").build(&app_handle)?;
             let add_files_item =
@@ -1339,9 +1448,13 @@ fn main() {
             read_clipboard_files,
             get_trash_items,
             delete_project,
+            rename_project,
             restore_project,
             permanently_delete_trash_item,
             empty_trash,
+            list_trashed_files,
+            restore_trashed_file,
+            permanently_delete_trashed_file,
             start_watching,
             stop_watching,
             search_project_files,

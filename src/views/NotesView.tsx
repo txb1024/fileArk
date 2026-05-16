@@ -132,11 +132,13 @@ const labels = {
 
 interface NotesViewProps {
   language: Language;
+  /** 外部跳转(如 Spotlight 搜索)选中的便签;每次 ts 变化都触发一次 selectNote + 展开父目录 */
+  initialNote?: { id: string; ts: number } | null;
 }
 
 const EXPAND_KEY = "fileark.notes.expanded";
 
-export function NotesView({ language }: NotesViewProps) {
+export function NotesView({ language, initialNote }: NotesViewProps) {
   const t = labels[language];
   const [tree, setTree] = useState<NoteTreeNode[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -278,6 +280,17 @@ export function NotesView({ language }: NotesViewProps) {
       });
     });
   }, []);
+
+  // 外部跳转(Spotlight 搜索)：每次 ts 变化都把该便签选中 + 展开父目录链
+  useEffect(() => {
+    if (!initialNote) return;
+    const slash = initialNote.id.lastIndexOf("/");
+    const parent = slash > 0 ? initialNote.id.substring(0, slash) : "";
+    if (parent) expandParents(parent);
+    selectNote(initialNote.id);
+    // initialNote.ts 作为「重新触发」的标记 — id 相同但 ts 变了也会再次执行
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialNote?.ts, initialNote?.id]);
 
   // 快速创建便签：直接走后端默认名「未命名便签」，不弹窗，立刻选中
   const quickCreateNote = useCallback(
@@ -873,13 +886,11 @@ function buildContextMenuItems({
   setConfirmDelete,
   openNotesTrash,
 }: BuildMenuArgs): ContextMenuItem[] {
-  // 空白处右键 = 在根目录创建 + 进入回收站（顶部回收站入口已移除）
+  // 空白处右键 = 在根目录创建
   if (!node) {
     return [
       { label: t.newNote, icon: <FileText size={14} />, onClick: () => quickCreateNote("") },
       { label: t.newFolder, icon: <FolderPlus size={14} />, onClick: () => openCreateFolder("") },
-      { divider: true },
-      { label: t.trash, icon: <Trash2 size={14} />, onClick: () => openNotesTrash() },
     ];
   }
   if (node.type === "folder") {

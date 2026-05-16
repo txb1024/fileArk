@@ -1,5 +1,5 @@
-import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { Check, FolderPlus, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Modal } from "../components";
 
 const messages = {
   zh: {
@@ -8,9 +8,13 @@ const messages = {
     editCategory: "编辑分类",
     deleteCategory: "删除分类",
     categoryName: "分类名称",
-    categoryNamePlaceholder: "输入分类名称",
-    categoryDeleteWarning: "删除分类不会删除文件夹中的文件，但分类将从列表中移除。"
-  }
+    categoryNamePlaceholder: "输入新的分类名称…",
+    categoryDeleteWarning: "删除分类不会删除已有文件夹中的文件，仅将该分类从列表中移除。",
+    close: "关闭",
+    save: "保存",
+    cancel: "取消",
+    emptyHint: "暂无分类，点击下方按钮创建第一个分类。",
+  },
 };
 
 interface CategoryEditModalProps {
@@ -34,61 +38,99 @@ export function CategoryEditModal({
   onDelete,
   onEdit,
   onAdd,
-  onClose
+  onClose,
 }: CategoryEditModalProps) {
   const t = messages.zh;
   return (
-    <div className="modal-backdrop">
-      <div className="modal" style={{ minWidth: 400 }}>
-        <h2>{t.manageCategories}</h2>
-        <div className="category-edit-list">
-          {categories.map((category, index) => (
-            <div className="category-edit-row" key={index}>
-              {editing?.index === index ? (
-                <>
-                  <input
-                    value={newName}
-                    onChange={(e) => onNewNameChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") onSave();
-                      if (e.key === "Escape") onEdit(-1, "");
-                    }}
-                    autoFocus
-                  />
-                  <button className="secondary compact-button" onClick={onSave}>
-                    <Check size={14} />
-                  </button>
-                  <button className="secondary compact-button" onClick={() => onEdit(-1, "")}>
-                    <X size={14} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span>{category}</span>
-                  <div className="category-edit-actions">
-                    <button className="secondary compact-button" onClick={() => onEdit(index, category)}>
-                      <Pencil size={14} />
-                    </button>
-                    <button className="secondary compact-button danger-hover" onClick={() => onDelete(index)}>
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-        <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>{t.categoryDeleteWarning}</p>
-        <div className="modal-actions" style={{ marginTop: 16 }}>
+    <Modal title={t.manageCategories} onClose={onClose}>
+      <div className="category-edit-panel">
+        {categories.length === 0 ? (
+          <div className="category-edit-empty">
+            <FolderPlus size={28} />
+            <p>{t.emptyHint}</p>
+          </div>
+        ) : (
+          <div className="category-edit-list">
+            {categories.map((category, index) => {
+              const isEditing = editing?.index === index;
+              return (
+                <div
+                  className={isEditing ? "category-edit-row editing" : "category-edit-row"}
+                  key={`${category}-${index}`}
+                >
+                  {isEditing ? (
+                    <>
+                      <input
+                        className="category-edit-input"
+                        value={newName}
+                        onChange={(e) => onNewNameChange(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") onSave();
+                          if (e.key === "Escape") onEdit(-1, "");
+                        }}
+                        placeholder={t.categoryNamePlaceholder}
+                        autoFocus
+                      />
+                      <div className="category-edit-actions">
+                        <button
+                          className="category-edit-icon-btn primary-hover"
+                          onClick={onSave}
+                          title={t.save}
+                          disabled={!newName.trim()}
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          className="category-edit-icon-btn"
+                          onClick={() => onEdit(-1, "")}
+                          title={t.cancel}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="category-edit-name" title={category}>
+                        {category}
+                      </span>
+                      <div className="category-edit-actions">
+                        <button
+                          className="category-edit-icon-btn"
+                          onClick={() => onEdit(index, category)}
+                          title={t.editCategory}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          className="category-edit-icon-btn danger-hover"
+                          onClick={() => onDelete(index)}
+                          title={t.deleteCategory}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <button className="category-edit-add" onClick={onAdd}>
+          <Plus size={15} />
+          <span>{t.addCategory}</span>
+        </button>
+
+        <p className="category-edit-hint">{t.categoryDeleteWarning}</p>
+
+        <div className="modal-actions">
           <button className="secondary" onClick={onClose}>
-            关闭
-          </button>
-          <button className="primary" onClick={onAdd}>
-            <Plus size={15} />
-            {t.addCategory}
+            {t.close}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -112,6 +112,20 @@ export type TrashItem = {
   deletedAt: string;
 };
 
+/** 项目内被删除的文件 / 文件夹（独立于整个项目删除的 TrashItem） */
+export type TrashedFile = {
+  id: string;
+  name: string;
+  originalPath: string;
+  trashStoragePath: string;
+  isDirectory: boolean;
+  size: number;
+  deletedAt: string;
+  projectId: string | null;
+  projectName: string | null;
+  category: string | null;
+};
+
 // 便签
 export type NoteMeta = {
   /** 相对路径，POSIX 分隔符，如 "工作/项目 A/周报.md"。同时是唯一 ID */
@@ -181,7 +195,11 @@ export type Messages = {
   settings: string;
   projectList: string;
   pinned: string;
+  unpinned: string;
+  rename: string;
+  deleteAction: string;
   openProjectFolder: string;
+  openContainingFolder: string;
   searchPlaceholder: string;
   importFiles: string;
   newProject: string;
@@ -325,9 +343,13 @@ export type ArchiveApi = {
   updateCategories: (categories: string[]) => Promise<AppData>;
   getTrashItems: () => Promise<TrashItem[]>;
   deleteProject: (projectId: string) => Promise<AppData>;
+  renameProject: (projectId: string, newName: string) => Promise<AppData>;
   restoreProject: (trashItemId: string) => Promise<AppData>;
   permanentlyDeleteTrashItem: (trashItemId: string) => Promise<void>;
   emptyTrash: () => Promise<void>;
+  listTrashedFiles: () => Promise<TrashedFile[]>;
+  restoreTrashedFile: (fileId: string) => Promise<string>;
+  permanentlyDeleteTrashedFile: (fileId: string) => Promise<void>;
   sendNotification: (title: string, body: string) => Promise<void>;
   readFileContent: (filePath: string) => Promise<string>;
   readFileBinary: (filePath: string) => Promise<string>;
@@ -339,7 +361,10 @@ export type ArchiveApi = {
     is_image: boolean;
     previewType: string;
   }>;
-  deleteFile: (filePath: string) => Promise<void>;
+  deleteFile: (
+    filePath: string,
+    context?: { projectId?: string; projectName?: string; category?: string },
+  ) => Promise<void>;
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   readClipboardFiles: () => Promise<string[]>;

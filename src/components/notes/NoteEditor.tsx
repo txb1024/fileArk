@@ -41,6 +41,10 @@ interface EditorEntry {
   debounceTimer: ReturnType<typeof setTimeout> | null;
   /** 守卫：我们自己触发的 setValue 不应被当作用户编辑回传给父组件 */
   isSettingValue: boolean;
+  /** 监听容器内代码块变化，自动给每个 <pre> 注入复制按钮 */
+  codeObserver: MutationObserver | null;
+  /** 注入复制按钮的防抖 timer */
+  enhanceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ── 模块级缓存：跨 NoteEditor 重挂载存活 ──────────────────────────────────
@@ -68,6 +72,14 @@ function destroyEntry(entry: EditorEntry) {
     clearTimeout(entry.debounceTimer);
     entry.debounceTimer = null;
   }
+  if (entry.enhanceTimer) {
+    clearTimeout(entry.enhanceTimer);
+    entry.enhanceTimer = null;
+  }
+  if (entry.codeObserver) {
+    entry.codeObserver.disconnect();
+    entry.codeObserver = null;
+  }
   if (entry.ready && entry.vditor) {
     try {
       entry.vditor.destroy();
@@ -76,6 +88,56 @@ function destroyEntry(entry: EditorEntry) {
     }
   }
   entry.container.remove();
+}
+
+/** 给每个 <pre> 注入"复制"按钮（contenteditable=false，不会被 vditor 当作内容） */
+function enhanceCodeBlocks(root: HTMLElement) {
+  const pres = root.querySelectorAll<HTMLPreElement>("pre");
+  pres.forEach((pre) => {
+    if (pre.querySelector(":scope > .notes-codeblock-copy")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "notes-codeblock-copy";
+    btn.contentEditable = "false";
+    btn.setAttribute("data-vditor-ignore", "true");
+    btn.textContent = "复制";
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const code = pre.querySelector("code");
+      const text = code ? code.textContent ?? "" : pre.textContent ?? "";
+      navigator.clipboard
+        .writeText(text)
+        .then(() => {
+          btn.textContent = "已复制";
+          btn.classList.add("copied");
+          window.setTimeout(() => {
+            btn.textContent = "复制";
+            btn.classList.remove("copied");
+          }, 1400);
+        })
+        .catch(() => {
+          btn.textContent = "失败";
+          window.setTimeout(() => (btn.textContent = "复制"), 1400);
+        });
+    });
+    pre.appendChild(btn);
+  });
+}
+
+function startCodeObserver(entry: EditorEntry) {
+  if (entry.codeObserver) return;
+  const obs = new MutationObserver(() => {
+    if (entry.enhanceTimer) clearTimeout(entry.enhanceTimer);
+    entry.enhanceTimer = setTimeout(() => {
+      entry.enhanceTimer = null;
+      enhanceCodeBlocks(entry.container);
+    }, 60);
+  });
+  obs.observe(entry.container, { childList: true, subtree: true });
+  entry.codeObserver = obs;
+  enhanceCodeBlocks(entry.container);
 }
 
 function destroyAll() {
@@ -244,6 +306,8 @@ function NoteEditorBase({
       pendingContent: null,
       debounceTimer: null,
       isSettingValue: false,
+      codeObserver: null,
+      enhanceTimer: null,
     };
     editorsCache.set(noteId, newEntry);
 
@@ -295,7 +359,7 @@ function NoteEditorBase({
       cache: { enable: false },
       counter: { enable: true, type: "markdown" },
       preview: {
-        hljs: { style: "github", lineNumber: true },
+        hljs: { style: "github", lineNumber: false },
         math: { engine: "KaTeX" },
       },
       // 完全禁用 hint:emoji，避免 vditor 在空字典上调 setStart 抛 IndexSizeError
@@ -352,6 +416,7 @@ function NoteEditorBase({
         }
         container.classList.remove("editor-busy");
         applyThemeTo(vditor);
+        startCodeObserver(newEntry);
       },
     });
     newEntry.vditor = vditor;

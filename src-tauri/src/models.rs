@@ -111,6 +111,7 @@ pub struct WorkspaceRegistry {
 
 // ── 回收站 ──────────────────────────────────────────────────
 
+/// 整个被删除的项目（旧逻辑，磁盘文件夹原地保留，恢复时复用）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TrashItem {
     pub id: String,
@@ -122,9 +123,33 @@ pub struct TrashItem {
     pub deleted_at: String,
 }
 
+/// 项目内被删除的单个文件 / 文件夹（新增）。
+/// 原文件已被移动到 trashed_files/{id}/{name}，恢复时再 move 回去。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedFile {
+    pub id: String,
+    pub name: String,
+    /// 删除前所在的绝对路径（恢复时优先回到这里）
+    pub original_path: String,
+    /// 删除时移动到的回收站内部路径（绝对）
+    pub trash_storage_path: String,
+    pub is_directory: bool,
+    pub size: i64,
+    pub deleted_at: String,
+    /// 可选：来自哪个项目（用于 UI 上显示「来源」）
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub category: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TrashData {
     pub items: Vec<TrashItem>,
+    /// 项目内被删除的文件 / 文件夹（新增字段，旧数据会缺，serde 默认填空）
+    #[serde(default)]
+    pub files: Vec<TrashedFile>,
 }
 
 // ── 预览 ────────────────────────────────────────────────────
