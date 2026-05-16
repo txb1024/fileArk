@@ -305,6 +305,14 @@ export type Messages = {
   workspaceRootDesc: string;
   workspaceRootNotSet: string;
   changeRoot: string;
+  repairPaths: string;
+  repairPathsDesc: string;
+  repairPathsResult: string;
+  repairPathsNone: string;
+  repairWorkspaces: string;
+  repairWorkspacesDesc: string;
+  repairWorkspacesResult: string;
+  repairWorkspacesNone: string;
   noteAssets: string;
   noteAssetsDesc: string;
   noteAssetsDefault: string;
@@ -351,6 +359,12 @@ export type ArchiveApi = {
   setNoteAssetsPath: (path: string | null) => Promise<AppData>;
   /** 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在 */
   getNoteAssetsDir: () => Promise<string>;
+  /** 历史遗留修复:对所有 path 不存在的项目,按 name 在当前 workspace_root 下重新定位。
+   *  返回 [修好的项目数, 最新的 AppData]。 */
+  repairProjectPaths: () => Promise<[number, AppData]>;
+  /** 历史遗留修复:把所有 workspace_root 还是默认根的工作空间,自动改成 default_root/{工作空间名}
+   *  并物理迁移项目目录。返回 [修复的工作空间数, 迁移的项目目录数, 当前 data]。 */
+  repairWorkspaceRoots: () => Promise<[number, number, AppData]>;
   getTrashItems: () => Promise<TrashItem[]>;
   deleteProject: (projectId: string) => Promise<AppData>;
   renameProject: (projectId: string, newName: string) => Promise<AppData>;

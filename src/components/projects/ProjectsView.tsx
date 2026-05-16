@@ -11,6 +11,7 @@ import {
   FolderPlus,
   LayoutGrid,
   LayoutList,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -36,6 +37,12 @@ interface Messages {
   openCategoryFolder: string;
   addFiles: string;
   newFolder: string;
+  addCategory: string;
+  deleteCategory: string;
+  renameCategory: string;
+  renameCategoryDuplicate: string;
+  addCategoryPlaceholder: string;
+  deleteCategoryConfirm: string;
   folderNamePrompt: string;
   name: string;
   modifiedAt: string;
@@ -110,6 +117,21 @@ export function ProjectsView({
   const [categoryCounts, setCategoryCounts] = useState<
     Record<string, number>
   >({});
+  // 分类侧栏的新增/删除 UI 状态
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [confirmDeleteCategory, setConfirmDeleteCategory] = useState<string | null>(null);
+  // 分类右键菜单 + 重命名
+  const [categoryContextMenu, setCategoryContextMenu] = useState<{
+    x: number;
+    y: number;
+    category: string;
+  } | null>(null);
+  const [renamingCategory, setRenamingCategory] = useState<string | null>(null);
+  const [renameCategoryName, setRenameCategoryName] = useState("");
+  // 拖文件到分类 item 上的高亮状态 + spring-loaded 自动切换 timer
+  const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
+  const categoryHoverTimerRef = useRef<number | undefined>(undefined);
   const [draggingFile, setDraggingFile] = useState<CategoryFile | null>(
     null
   );
@@ -283,6 +305,81 @@ export function ProjectsView({
     setNewFolderName("");
   }
 
+  /** 新增分类:加到全局 categories 末尾,所有项目可见。物理目录在进入分类时按需创建。 */
+  async function addCategory() {
+    const name = newCategoryName.trim();
+    if (!name) {
+      setAddingCategory(false);
+      return;
+    }
+    const existing = data.settings.categories;
+    if (existing.includes(name)) {
+      setAddingCategory(false);
+      setNewCategoryName("");
+      setSelectedCategory(name);
+      return;
+    }
+    const updated = await api.updateCategories([...existing, name]);
+    setData(updated);
+    setAddingCategory(false);
+    setNewCategoryName("");
+    setSelectedCategory(name);
+  }
+
+  /** 删除分类:只从全局 categories 移除,磁盘文件夹和文件保留(避免误删用户数据)。 */
+  async function deleteCategory(name: string) {
+    const next = data.settings.categories.filter((c) => c !== name);
+    const updated = await api.updateCategories(next);
+    setData(updated);
+    if (selectedCategory === name) {
+      setSelectedCategory(updated.settings.categories[0] || "");
+    }
+    setConfirmDeleteCategory(null);
+  }
+
+  function startRenameCategory(name: string) {
+    setRenamingCategory(name);
+    setRenameCategoryName(name);
+  }
+
+  function cancelRenameCategory() {
+    setRenamingCategory(null);
+    setRenameCategoryName("");
+  }
+
+  /** 重命名分类:同名(忽略大小写)报错,空名/未变化静默取消。
+   *  只改全局列表;磁盘上的旧物理目录保留,避免误删用户文件。 */
+  async function submitRenameCategory() {
+    const oldName = renamingCategory;
+    if (!oldName) return;
+    const newName = renameCategoryName.trim();
+    if (!newName || newName === oldName) {
+      cancelRenameCategory();
+      return;
+    }
+    const exists = data.settings.categories.some(
+      (c) => c.toLowerCase() === newName.toLowerCase() && c !== oldName,
+    );
+    if (exists) {
+      window.alert(t.renameCategoryDuplicate.replace("{name}", newName));
+      // 保留输入框让用户改
+      return;
+    }
+    const next = data.settings.categories.map((c) => (c === oldName ? newName : c));
+    const updated = await api.updateCategories(next);
+    setData(updated);
+    if (selectedCategory === oldName) setSelectedCategory(newName);
+    cancelRenameCategory();
+  }
+
+  /** 右键「打开目录文件」:在系统资源管理器中打开 {project.path}/{category}。
+   *  open_folder 命令会按需创建,所以即便没建过也能正常打开。 */
+  async function openCategoryFolderInSystem(category: string) {
+    if (!activeProject) return;
+    const path = `${activeProject.path}\\${category}`;
+    await api.openFolder(path);
+  }
+
   async function handlePasteFile(targetPath: string) {
     if (!copiedFile) return;
     await api.copyFileTo({ sourcePath: copiedFile.path, targetPath });
@@ -300,12 +397,47 @@ export function ProjectsView({
         targetPath,
       });
       await refreshCategoryFiles();
+      // 移成功后展开目标文件夹,让用户看到刚拖进去的文件
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        next.add(targetPath);
+        return next;
+      });
     } catch (err) {
       console.error("Move failed:", err);
     }
     draggingFileRef.current = null;
     setDraggingFile(null);
     setDragOverFolder(null);
+  }
+
+  /** 处理子文件夹上的 drop:
+   *  - 拖入外部文件(系统拖进来) → 逐个 copy 到子文件夹
+   *  - 拖动列表内文件 → 复用 handleDropToFolder 移动
+   *  事件已 stopPropagation 防止冒泡到外层 file-panel(否则会走 addFilesToCategory 加到分类根) */
+  async function handleAnyDropToFolder(e: React.DragEvent, targetPath: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolder(null);
+    setIsDraggingFiles(false);
+    const externalPaths = getDroppedFilePaths(e);
+    if (externalPaths.length > 0) {
+      try {
+        for (const sourcePath of externalPaths) {
+          await api.copyFileTo({ sourcePath, targetPath });
+        }
+        await refreshCategoryFiles();
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          next.add(targetPath);
+          return next;
+        });
+      } catch (err) {
+        console.error("Copy to folder failed:", err);
+      }
+      return;
+    }
+    await handleDropToFolder(targetPath);
   }
 
   // ── Drag & Drop ─────────────────────────────────────────
@@ -326,14 +458,90 @@ export function ProjectsView({
     folderPath: string
   ) {
     e.preventDefault();
+    e.stopPropagation();
     const current = draggingFileRef.current;
-    if (current && !current.isDirectory) {
-      e.dataTransfer.dropEffect = "move";
+    // 内部拖动:仅文件可拖到子文件夹(目录不能拖到目录里)
+    if (current) {
+      if (!current.isDirectory && current.path !== folderPath) {
+        e.dataTransfer.dropEffect = "move";
+        setDragOverFolder(folderPath);
+      } else {
+        e.dataTransfer.dropEffect = "none";
+      }
+      return;
+    }
+    // 外部拖入(系统拖进来的文件):dataTransfer 有 file 类型
+    if (e.dataTransfer.types && Array.from(e.dataTransfer.types).includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
       setDragOverFolder(folderPath);
-    } else {
-      e.dataTransfer.dropEffect = "none";
     }
   }
+
+  // ── 拖文件到「分类 item」(左侧侧栏)──────────────────────
+  //
+  // 行为:
+  // - hover 在分类 item 上 500ms 自动切换 selectedCategory(spring-loaded folder),
+  //   切换后用户可以继续往那个分类的子文件夹里拖
+  // - 直接 drop 在分类 item 上 → 文件移动到该分类的物理根目录,并切换视图
+  // 只接受内部拖动(file row),不在 toolbar 上接受外部 OS 拖入
+
+  function clearCategoryHoverTimer() {
+    if (categoryHoverTimerRef.current !== undefined) {
+      window.clearTimeout(categoryHoverTimerRef.current);
+      categoryHoverTimerRef.current = undefined;
+    }
+  }
+
+  function handleCategoryDragOver(e: React.DragEvent, category: string) {
+    const current = draggingFileRef.current;
+    if (!current || current.isDirectory) return;
+    // 不允许拖到当前已选中的分类(本来就在这里)
+    if (category === selectedCategory) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverCategory !== category) {
+      setDragOverCategory(category);
+      clearCategoryHoverTimer();
+      categoryHoverTimerRef.current = window.setTimeout(() => {
+        setSelectedCategory(category);
+        // 切换后清掉高亮(此时它已变 active)
+        setDragOverCategory(null);
+        categoryHoverTimerRef.current = undefined;
+      }, 500);
+    }
+  }
+
+  function handleCategoryDragLeave() {
+    clearCategoryHoverTimer();
+    setDragOverCategory(null);
+  }
+
+  async function handleCategoryDrop(e: React.DragEvent, category: string) {
+    const current = draggingFileRef.current;
+    if (!current || !activeProject) return;
+    clearCategoryHoverTimer();
+    setDragOverCategory(null);
+    if (category === selectedCategory) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // 目标 = 该分类的物理根目录,backend 会按需创建
+    const targetPath = `${activeProject.path}\\${category}`;
+    try {
+      await api.moveFileTo({ sourcePath: current.path, targetPath });
+      setSelectedCategory(category);
+      // refresh 在 selectedCategory 变化的 useEffect 里会自动触发
+    } catch (err) {
+      console.error("Move to category failed:", err);
+    }
+    draggingFileRef.current = null;
+    setDraggingFile(null);
+  }
+
+  // 组件卸载时清掉 timer,避免 setSelectedCategory on unmounted
+  useEffect(() => {
+    return () => clearCategoryHoverTimer();
+  }, []);
 
   function toggleFolderExpanded(folderPath: string) {
     setExpandedFolders((prev) => {
@@ -492,25 +700,91 @@ export function ProjectsView({
               </button>
             </div>
             <div className="category-list">
-              {data.settings.categories.map((category) => (
-                <button
-                  className={
-                    category === selectedCategory
-                      ? "category-row active"
-                      : "category-row"
-                  }
-                  key={category}
-                  onClick={() => setSelectedCategory(category)}
-                >
-                  <span>
-                    <FolderOpen size={18} />
-                    {category}
-                  </span>
-                  {categoryCounts[category] > 0 && (
-                    <small>{categoryCounts[category]}</small>
-                  )}
-                </button>
-              ))}
+              {data.settings.categories.map((category) => {
+                const isRenaming = renamingCategory === category;
+                return (
+                  <div
+                    key={category}
+                    className={
+                      (category === selectedCategory
+                        ? "category-row-wrap active"
+                        : "category-row-wrap") +
+                      (dragOverCategory === category ? " category-drag-over" : "")
+                    }
+                    onContextMenu={(e) => {
+                      if (isRenaming) return;
+                      e.preventDefault();
+                      setCategoryContextMenu({ x: e.clientX, y: e.clientY, category });
+                    }}
+                    onDragOver={(e) => handleCategoryDragOver(e, category)}
+                    onDragLeave={handleCategoryDragLeave}
+                    onDrop={(e) => void handleCategoryDrop(e, category)}
+                  >
+                    {isRenaming ? (
+                      <input
+                        className="category-add-input"
+                        value={renameCategoryName}
+                        onChange={(e) => setRenameCategoryName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void submitRenameCategory();
+                          if (e.key === "Escape") cancelRenameCategory();
+                        }}
+                        onBlur={() => void submitRenameCategory()}
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        className={
+                          category === selectedCategory
+                            ? "category-row active"
+                            : "category-row"
+                        }
+                        onClick={() => setSelectedCategory(category)}
+                      >
+                        <span>
+                          <FolderOpen size={18} />
+                          {category}
+                        </span>
+                        {categoryCounts[category] > 0 && (
+                          <small>{categoryCounts[category]}</small>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {!categoryCollapsed && (
+                addingCategory ? (
+                  <div className="category-row-wrap adding">
+                    <input
+                      className="category-add-input"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void addCategory();
+                        if (e.key === "Escape") {
+                          setAddingCategory(false);
+                          setNewCategoryName("");
+                        }
+                      }}
+                      onBlur={() => void addCategory()}
+                      placeholder={t.addCategoryPlaceholder}
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <button
+                    className="category-add-btn"
+                    onClick={() => {
+                      setAddingCategory(true);
+                      setNewCategoryName("");
+                    }}
+                  >
+                    <Plus size={14} />
+                    <span>{t.addCategory}</span>
+                  </button>
+                )
+              )}
             </div>
           </div>
 
@@ -710,11 +984,7 @@ export function ProjectsView({
                       className={`file-section ${dragOverFolder === folder.path ? "folder-drag-over" : ""}`}
                       onDragOver={(e) => handleDragOver(e, folder.path)}
                       onDragLeave={() => setDragOverFolder(null)}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleDropToFolder(folder.path);
-                      }}
+                      onDrop={(e) => handleAnyDropToFolder(e, folder.path)}
                     >
                       <div
                         className="file-section-title"
@@ -879,6 +1149,52 @@ export function ProjectsView({
         </>
       )}
 
+      {/* 分类右键菜单 */}
+      {categoryContextMenu && (
+        <>
+          <div
+            className="context-menu-overlay"
+            onClick={() => setCategoryContextMenu(null)}
+          />
+          <div
+            className="context-menu"
+            style={{ left: categoryContextMenu.x, top: categoryContextMenu.y }}
+          >
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                openCategoryFolderInSystem(categoryContextMenu.category);
+                setCategoryContextMenu(null);
+              }}
+            >
+              <FolderOpen size={14} />
+              {t.openCategoryFolder}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                startRenameCategory(categoryContextMenu.category);
+                setCategoryContextMenu(null);
+              }}
+            >
+              <Pencil size={14} />
+              {t.renameCategory}
+            </button>
+            <div className="context-menu-divider" />
+            <button
+              className="context-menu-item danger-text"
+              onClick={() => {
+                setConfirmDeleteCategory(categoryContextMenu.category);
+                setCategoryContextMenu(null);
+              }}
+            >
+              <Trash2 size={14} />
+              {t.deleteCategory}
+            </button>
+          </div>
+        </>
+      )}
+
       {/* 删除确认 */}
       {deleteConfirmOpen && pendingDeleteFile && (
         <ConfirmDangerDialog
@@ -907,11 +1223,23 @@ export function ProjectsView({
       {batchDeleteOpen && (
         <ConfirmDangerDialog
           title="批量删除"
-          message={`选中的 ${selectedFiles.size} 个文件会移入回收站，保留 30 天后自动永久删除。`}
+          message={`选中的 ${selectedFiles.size} 个文件会移入回收站,保留 30 天后自动永久删除。`}
           confirmLabel="删除"
           cancelLabel={t.migrateCancel}
           onConfirm={handleDeleteSelected}
           onClose={() => setBatchDeleteOpen(false)}
+        />
+      )}
+
+      {/* 删除分类确认 — 只从全局列表移除,不动磁盘文件 */}
+      {confirmDeleteCategory && (
+        <ConfirmDangerDialog
+          title={t.deleteCategory}
+          message={t.deleteCategoryConfirm.replace("{name}", confirmDeleteCategory)}
+          confirmLabel={t.deleteCategory}
+          cancelLabel={t.migrateCancel}
+          onConfirm={() => deleteCategory(confirmDeleteCategory)}
+          onClose={() => setConfirmDeleteCategory(null)}
         />
       )}
     </section>

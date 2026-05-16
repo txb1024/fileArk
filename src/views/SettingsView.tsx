@@ -90,6 +90,24 @@ export function SettingsView({
     setData(await api.setNoteAssetsPath(null));
   }
 
+  async function repairProjectPaths() {
+    const [count, updated] = await api.repairProjectPaths();
+    setData(updated);
+    const msg = count > 0 ? t.repairPathsResult.replace("{count}", String(count)) : t.repairPathsNone;
+    window.alert(msg);
+  }
+
+  async function repairWorkspaceRoots() {
+    const [wsCount, fileCount, updated] = await api.repairWorkspaceRoots();
+    setData(updated);
+    const msg = wsCount > 0
+      ? t.repairWorkspacesResult
+          .replace("{wsCount}", String(wsCount))
+          .replace("{fileCount}", String(fileCount))
+      : t.repairWorkspacesNone;
+    window.alert(msg);
+  }
+
   return (
     <section className="page settings-page">
       <div className="page-header">
@@ -204,6 +222,26 @@ export function SettingsView({
           </div>
           <button className="secondary" onClick={chooseRoot}>
             {t.changeRoot}
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <strong>{t.repairPaths}</strong>
+            <p>{t.repairPathsDesc}</p>
+          </div>
+          <button className="secondary" onClick={repairProjectPaths}>
+            {t.repairPaths}
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <strong>{t.repairWorkspaces}</strong>
+            <p>{t.repairWorkspacesDesc}</p>
+          </div>
+          <button className="secondary" onClick={repairWorkspaceRoots}>
+            {t.repairWorkspaces}
           </button>
         </div>
 

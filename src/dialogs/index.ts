@@ -7,3 +7,4 @@ export { ConfirmDeleteDialog } from "./ConfirmDeleteDialog";
 export { MigrateRootDialog } from "./MigrateRootDialog";
 export { TrashConfirmDialog } from "./TrashConfirmDialog";
 export { ConfirmDangerDialog } from "./ConfirmDangerDialog";
+export { BootstrapDialog } from "./BootstrapDialog";

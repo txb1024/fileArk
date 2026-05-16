@@ -46,6 +46,7 @@ import {
   CategoryEditModal,
   PreviewModal,
   ConfirmDangerDialog,
+  BootstrapDialog,
 } from "./dialogs";
 import { storage } from "./utils";
 
@@ -93,6 +94,12 @@ const messages = {
     openCategoryFolder: "打开分类文件夹",
     addFiles: "加入文件",
     newFolder: "新建目录",
+    addCategory: "新建分类",
+    deleteCategory: "删除分类",
+    renameCategory: "重命名",
+    renameCategoryDuplicate: "已存在同名分类「{name}」,请换一个名字。",
+    addCategoryPlaceholder: "输入新分类名…",
+    deleteCategoryConfirm: "确定从全局分类列表中删除「{name}」？磁盘上的文件夹和文件不会被删除。",
     sortByName: "按名称",
     sortByTime: "按时间",
     sortBySize: "按大小",
@@ -194,6 +201,14 @@ const messages = {
     workspaceRootDesc: "新建项目时，会在这个目录下生成项目文件夹。",
     workspaceRootNotSet: "未设置",
     changeRoot: "更换",
+    repairPaths: "修复项目路径",
+    repairPathsDesc: "若之前迁移过工作目录但项目卡片打不开,点这里按项目名在当前目录下重新定位。",
+    repairPathsResult: "已修复 {count} 个项目路径。",
+    repairPathsNone: "没有需要修复的项目。",
+    repairWorkspaces: "分离工作空间目录",
+    repairWorkspacesDesc: "把还共用默认根目录的工作空间自动改成 默认根/工作空间名 子目录,并把已有项目目录整体搬过去。",
+    repairWorkspacesResult: "已分离 {wsCount} 个工作空间,迁移 {fileCount} 个项目目录。",
+    repairWorkspacesNone: "没有需要分离的工作空间。",
     noteAssets: "便签附件目录",
     noteAssetsDesc: "便签中的图片、文件等附件保存位置。留空则使用默认 {workspaceRoot}/notes/assets。",
     noteAssetsDefault: "默认（工作目录下 notes/assets）",
@@ -229,6 +244,12 @@ const messages = {
     openCategoryFolder: "Open category folder",
     addFiles: "Add Files",
     newFolder: "New Folder",
+    addCategory: "New category",
+    deleteCategory: "Delete category",
+    renameCategory: "Rename",
+    renameCategoryDuplicate: "Category \"{name}\" already exists. Pick a different name.",
+    addCategoryPlaceholder: "Category name…",
+    deleteCategoryConfirm: "Remove \"{name}\" from the global category list? Files and folders on disk are kept.",
     sortByName: "Name",
     sortByTime: "Time",
     sortBySize: "Size",
@@ -334,6 +355,14 @@ const messages = {
     workspaceRootDesc: "New projects will create folders under this directory.",
     workspaceRootNotSet: "Not set",
     changeRoot: "Change",
+    repairPaths: "Repair project paths",
+    repairPathsDesc: "If projects fail to open after migrating workspace root, relocate them by name under the current root.",
+    repairPathsResult: "Repaired {count} project path(s).",
+    repairPathsNone: "No projects needed repair.",
+    repairWorkspaces: "Separate workspace folders",
+    repairWorkspacesDesc: "Move workspaces still sharing the default root into default-root/workspace-name subfolders, and physically move project folders too.",
+    repairWorkspacesResult: "Separated {wsCount} workspace(s), migrated {fileCount} project folder(s).",
+    repairWorkspacesNone: "No workspaces needed separation.",
     noteAssets: "Note assets folder",
     noteAssetsDesc: "Where images and files used in notes are stored. Leave blank for the default ({workspaceRoot}/notes/assets).",
     noteAssetsDefault: "Default ({workspaceRoot}/notes/assets)",
@@ -367,6 +396,11 @@ export function App() {
   // 狀態
   const [data, setData] = useState<AppData>(emptyData);
   const [registry, setRegistry] = useState<WorkspaceRegistry | null>(null);
+  // 首次启动时是否展示「设置工作目录」引导。判断条件:
+  // - localStorage 没标记过(全新装 / 用户主动清过)
+  // - 且当前没有任何项目(老用户已有项目就别打扰)
+  // - 且 workspaceRoot 看起来是默认值(包含 Documents 或 \\个人项目资料库 这种)
+  const [showBootstrap, setShowBootstrap] = useState(false);
   const [view, setView] = useState<View>("home");
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>(() =>
@@ -421,7 +455,13 @@ export function App() {
   // 初始化
   useEffect(() => {
     api.listWorkspaces().then(setRegistry);
-    api.getData().then(setData);
+    api.getData().then((d) => {
+      setData(d);
+      const seen = storage.get<boolean>("archive.bootstrapDone", false);
+      if (!seen && d.projects.length === 0) {
+        setShowBootstrap(true);
+      }
+    });
   }, []);
 
   // 系统窗口标题栏跟随 app 主题深浅切换(Windows 11 immersive dark mode / macOS native)
@@ -633,8 +673,13 @@ export function App() {
 
   const handleMigrateRoot = useCallback(
     async (oldRoot: string, newRoot: string, migrate: boolean) => {
-      setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
-      setDialog({ type: "none" });
+      try {
+        setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
+        setDialog({ type: "none" });
+      } catch (err) {
+        // 后端拒绝(如目标目录是源目录的子目录)走这里;弹原始错误文本让用户看清
+        window.alert(String(err));
+      }
     },
     []
   );
@@ -664,7 +709,7 @@ export function App() {
     }
     const updatedData = await api.updateCategories(newCategories);
     setData(updatedData);
-    setCategoryEditOpen(false);
+    // 不关闭 modal,让用户可以连续编辑/添加多个分类
     setCategoryEditing(null);
     setCategoryNewName("");
   }
@@ -1087,6 +1132,30 @@ export function App() {
           cancelLabel="取消"
           onConfirm={() => handleProjectDeleteConfirm(dialog.projectId)}
           onClose={() => setDialog({ type: "none" })}
+        />
+      )}
+
+      {showBootstrap && (
+        <BootstrapDialog
+          defaultRoot={data.settings.workspaceRoot}
+          language={language}
+          onUseDefault={() => {
+            storage.set("archive.bootstrapDone", true);
+            setShowBootstrap(false);
+          }}
+          onPickCustom={async () => {
+            try {
+              const picked = await api.selectRoot();
+              if (picked) {
+                setData(await api.updateRoot(picked));
+              }
+            } catch (err) {
+              console.error("bootstrap selectRoot failed:", err);
+            } finally {
+              storage.set("archive.bootstrapDone", true);
+              setShowBootstrap(false);
+            }
+          }}
         />
       )}
 

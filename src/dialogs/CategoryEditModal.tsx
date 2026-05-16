@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Check, FolderPlus, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Modal } from "../components";
 
@@ -41,10 +42,30 @@ export function CategoryEditModal({
   onClose,
 }: CategoryEditModalProps) {
   const t = messages.zh;
+  // 内部 isAdding 状态:点「添加分类」后展示一行 inline 输入框,
+  // 否则点了按钮没视觉反馈,用户感知不到。父组件 onSave 完成时清掉。
+  const [isAdding, setIsAdding] = useState(false);
+
+  const startAdd = () => {
+    onAdd();
+    setIsAdding(true);
+  };
+
+  const submitAdd = () => {
+    if (!newName.trim()) return;
+    onSave();
+    setIsAdding(false);
+  };
+
+  const cancelAdd = () => {
+    setIsAdding(false);
+    onNewNameChange("");
+  };
+
   return (
     <Modal title={t.manageCategories} onClose={onClose}>
       <div className="category-edit-panel">
-        {categories.length === 0 ? (
+        {categories.length === 0 && !isAdding ? (
           <div className="category-edit-empty">
             <FolderPlus size={28} />
             <p>{t.emptyHint}</p>
@@ -115,13 +136,47 @@ export function CategoryEditModal({
                 </div>
               );
             })}
+            {isAdding ? (
+              <div className="category-edit-row editing">
+                <input
+                  className="category-edit-input"
+                  value={newName}
+                  onChange={(e) => onNewNameChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitAdd();
+                    if (e.key === "Escape") cancelAdd();
+                  }}
+                  placeholder={t.categoryNamePlaceholder}
+                  autoFocus
+                />
+                <div className="category-edit-actions">
+                  <button
+                    className="category-edit-icon-btn primary-hover"
+                    onClick={submitAdd}
+                    title={t.save}
+                    disabled={!newName.trim()}
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    className="category-edit-icon-btn"
+                    onClick={cancelAdd}
+                    title={t.cancel}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         )}
 
-        <button className="category-edit-add" onClick={onAdd}>
-          <Plus size={15} />
-          <span>{t.addCategory}</span>
-        </button>
+        {!isAdding ? (
+          <button className="category-edit-add" onClick={startAdd}>
+            <Plus size={15} />
+            <span>{t.addCategory}</span>
+          </button>
+        ) : null}
 
         <p className="category-edit-hint">{t.categoryDeleteWarning}</p>
 

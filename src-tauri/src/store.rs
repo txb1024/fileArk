@@ -36,7 +36,17 @@ pub fn create_default_data() -> AppData {
     }
 }
 
-fn default_root() -> std::path::PathBuf {
+/// 用「默认根 / 工作空间名」作为新工作空间的默认根目录,避免和其他工作空间混在一个目录。
+pub fn create_default_data_for_workspace(workspace_name: &str) -> AppData {
+    let mut data = create_default_data();
+    let safe = crate::utils::safe_folder_name(workspace_name);
+    if !safe.is_empty() {
+        data.settings.workspace_root = default_root().join(safe).to_string_lossy().to_string();
+    }
+    data
+}
+
+pub fn default_root() -> std::path::PathBuf {
     home_dir().join("Documents").join("個人項目資料庫")
 }
 
@@ -101,7 +111,7 @@ fn app_data_dir(app: &AppHandle) -> std::path::PathBuf {
     app.path().app_data_dir().unwrap()
 }
 
-fn workspace_data_path(app: &AppHandle, data_file: &str) -> std::path::PathBuf {
+pub fn workspace_data_path(app: &AppHandle, data_file: &str) -> std::path::PathBuf {
     app_data_dir(app).join(data_file)
 }
 
@@ -137,7 +147,13 @@ pub fn read_data(app: &AppHandle) -> Result<AppData, String> {
 
     let raw = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
     match serde_json::from_str::<AppData>(&raw) {
-        Ok(data) => Ok(data),
+        Ok(mut data) => {
+            // 分类名按字母序排,所有展示自动有序
+            data.settings
+                .categories
+                .sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            Ok(data)
+        }
         Err(_) => {
             let backup_path = data_path.with_extension("json.corrupt");
             let _ = fs::rename(&data_path, &backup_path);

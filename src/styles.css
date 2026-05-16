@@ -1254,10 +1254,60 @@ small,
   justify-content: space-between;
   gap: 12px;
   text-align: left;
+  width: 100%;
+  cursor: pointer;
   transition:
     border-color 0.2s,
     background 0.2s,
     color 0.2s;
+}
+
+/* 分类行外层 wrap:承载 row + 重命名 inline input */
+.category-row-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 拖文件 hover 在分类 item 上时(spring-loaded:0.5s 后自动切换) */
+.category-row-wrap.category-drag-over .category-row {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* 新增分类的 inline input 和按钮 */
+.category-add-btn {
+  min-height: 36px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-md);
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.category-add-btn:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+  border-color: var(--accent);
+}
+.category-add-input {
+  min-height: 36px;
+  border: 1px solid var(--accent);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-md);
+  padding: 0 10px;
+  width: 100%;
+  font-size: 13px;
+  outline: none;
 }
 
 .category-row span {
@@ -1844,6 +1894,17 @@ small,
   font-size: 13px;
 }
 
+/* 文件行(非目录)显式允许 HTML5 拖拽。WebView2 + user-select: none 组合下,
+   不加 -webkit-user-drag: element 时浏览器会忽略 draggable=true 直接拒绝 dragstart。
+   光标改成 grab 给视觉提示。 */
+.file-table-row[draggable="true"] {
+  -webkit-user-drag: element;
+  cursor: grab;
+}
+.file-table-row[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .file-table-row:hover {
   background: var(--accent-soft);
 }
@@ -1910,6 +1971,13 @@ small,
   border: 2px dashed var(--accent);
   border-radius: 6px;
   padding: 4px 8px;
+  /* 拖入时让标题区更明显,增大命中区域感知 */
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+.file-section.folder-drag-over .file-section-title {
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 4px;
 }
 
 .file-section.folder-drag-over .file-section-title span {
@@ -4131,7 +4199,10 @@ input {
 }
 
 .note-tree-row:hover {
-  background: var(--surface-soft);
+  background: rgba(55, 53, 47, 0.08);
+}
+.app-shell.theme-dark .note-tree-row:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .note-tree-row.active {
@@ -6870,6 +6941,8 @@ input {
   flex: 1;
   min-height: 0;
   height: 100%;
+  /* BlockNote 自身不设滚动,由我们的容器接管 */
+  overflow-y: auto;
   background: var(--bg);
   --bn-font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
@@ -7000,12 +7073,19 @@ input {
   color: #e6edf3;
 }
 
-/* 代码块复制按钮 — 浮在代码块右上角,只在 hover 时显示 */
-.notes-codeblock-copy {
+/* 代码块工具栏(复制 / 折叠) — React 渲染在 .note-blocknote-root 内,
+   位置由 JS 计算的 inline top/right 决定;完全脱离 BlockNote/ProseMirror
+   管控的 DOM,避免 PM 重渲染导致工具栏反复重建。
+   只在 hoveredCode 不为 null 时存在,所以无需 hover 控制显隐。 */
+.notes-codeblock-toolbar {
   position: absolute;
-  top: 6px;
-  right: 8px;
-  z-index: 2;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+}
+.notes-codeblock-copy,
+.notes-codeblock-collapse {
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(0, 0, 0, 0.08);
   color: #57606a;
@@ -7013,17 +7093,14 @@ input {
   padding: 2px 8px;
   border-radius: 4px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease, background 80ms ease;
+  transition: background 80ms ease;
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", sans-serif;
+  user-select: none;
 }
-.note-blocknote-root .bn-block-content[data-content-type="codeBlock"]:hover .notes-codeblock-copy,
-.notes-codeblock-copy:focus-visible {
-  opacity: 1;
-}
-.notes-codeblock-copy:hover {
+.notes-codeblock-copy:hover,
+.notes-codeblock-collapse:hover {
   background: #fff;
   color: #1f2328;
 }
@@ -7032,14 +7109,39 @@ input {
   color: var(--accent-on);
   border-color: var(--accent);
 }
-.app-shell.theme-dark .notes-codeblock-copy {
+.app-shell.theme-dark .notes-codeblock-copy,
+.app-shell.theme-dark .notes-codeblock-collapse {
   background: rgba(48, 54, 61, 0.85);
   color: #b1bac4;
   border-color: rgba(255, 255, 255, 0.08);
 }
-.app-shell.theme-dark .notes-codeblock-copy:hover {
+.app-shell.theme-dark .notes-codeblock-copy:hover,
+.app-shell.theme-dark .notes-codeblock-collapse:hover {
   background: #30363d;
   color: #e6edf3;
+}
+
+/* 折叠状态:限制代码块高度 + 底部渐隐提示还有内容 */
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"][data-codeblock-collapsed="1"] pre {
+  max-height: 6.4em;
+  overflow: hidden;
+  position: relative;
+}
+.note-blocknote-root .bn-block-content[data-content-type="codeBlock"][data-codeblock-collapsed="1"] pre::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, var(--surface-soft));
+  pointer-events: none;
+}
+.app-shell.theme-dark
+  .note-blocknote-root
+  .bn-block-content[data-content-type="codeBlock"][data-codeblock-collapsed="1"]
+  pre::after {
+  background: linear-gradient(to bottom, transparent, #1d1d1d);
 }
 
 /* 内联 code */
@@ -7186,9 +7288,14 @@ input {
 .note-blocknote-root.has-outline {
   display: grid;
   grid-template-columns: 1fr 220px;
+  grid-template-rows: 1fr;
+  min-height: 0;
 }
 .note-blocknote-root.has-outline .bn-container {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
 }
 .note-outline {
   border-left: 1px solid var(--border);

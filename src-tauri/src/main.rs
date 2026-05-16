@@ -44,7 +44,9 @@ fn create_workspace(app: tauri::AppHandle, name: String) -> Result<WorkspaceRegi
     let mut registry = read_registry(&app)?;
     let id = Uuid::new_v4().to_string();
     let data_file = format!("workspace-{}.json", id);
-    let empty_data = create_default_data();
+    // 用「默认根 / 工作空间名」作为新工作空间的默认根目录,
+    // 避免多个工作空间的项目混在同一个 Documents/個人項目資料庫 下。
+    let empty_data = store::create_default_data_for_workspace(&name);
     let data_path = app_path(&app).join(&data_file);
     let json = serde_json::to_string_pretty(&empty_data).map_err(|e| e.to_string())?;
     fs::write(&data_path, json).map_err(|e| e.to_string())?;
@@ -280,8 +282,12 @@ fn rename_project(
 #[tauri::command]
 fn update_root(app: tauri::AppHandle, root: String) -> Result<AppData, String> {
     let mut data = read_data(&app)?;
+    let old_root = data.settings.workspace_root.clone();
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    data.settings.workspace_root = root;
+    data.settings.workspace_root = root.clone();
+    // 切换工作目录(不迁移文件)时,把已存在项目的 path 前缀从旧根改到新根,
+    // 否则点项目卡片打开会指向旧目录,触发「找不到文件」。
+    rewrite_project_paths(&mut data, &old_root, &root);
     write_data(&app, &data)?;
     Ok(data)
 }
@@ -301,6 +307,12 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
     let old_path = Path::new(&input.old_root);
     let new_path = Path::new(&input.new_root);
 
+    // 阻止「新目录是旧目录子目录」/ 反之 的迁移:不阻断会导致 copy 进自己的子目录,
+    // 触发无限递归直到栈溢出 / 磁盘爆,进程崩溃(用户报告:点迁移整个应用退出)。
+    if let Err(e) = ensure_not_nested(old_path, new_path) {
+        return Err(e);
+    }
+
     fs::create_dir_all(&input.new_root).map_err(|e| e.to_string())?;
 
     if input.migrate && old_path.exists() {
@@ -318,9 +330,210 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
         }
     }
 
-    data.settings.workspace_root = input.new_root;
+    let old_root = data.settings.workspace_root.clone();
+    data.settings.workspace_root = input.new_root.clone();
+    // 不管选了「迁移」还是「仅切换」,项目 path 都得跟着改:文件已搬走 → 必须改;
+    // 仅切换 → 用户后续手动把文件挪过去,这一刻起前端已用新根工作,旧路径就是死的。
+    rewrite_project_paths(&mut data, &old_root, &input.new_root);
     write_data(&app, &data)?;
     Ok(data)
+}
+
+/// 检查两个目录是否互为子目录(canonicalize 后 components 比对,大小写不敏感)。
+/// 如果 a == b、a 在 b 之下或 b 在 a 之下,返回 Err 提示用户。
+/// 防止 migrate_root 把目录复制进自己的子目录触发无限递归。
+fn ensure_not_nested(a: &Path, b: &Path) -> Result<(), String> {
+    let canon_a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let canon_b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    let comps_a: Vec<String> = canon_a
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let comps_b: Vec<String> = canon_b
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    if comps_a == comps_b {
+        return Err("源目录和目标目录相同,无需迁移".to_string());
+    }
+    let nested = if comps_a.len() < comps_b.len() {
+        comps_b.starts_with(&comps_a)
+    } else {
+        comps_a.starts_with(&comps_b)
+    };
+    if nested {
+        return Err(format!(
+            "无法迁移:目标目录是源目录的父目录或子目录\n  {}\n  {}",
+            canon_a.display(),
+            canon_b.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 基于 Path::components 把 `path` 中以 `old_root` 为前缀的部分替换成 `new_root`。///
+/// 之前用 `&path[old_bs.len()..]` 字节切片实现,**含中文路径时如果分隔符差异 / lowercase
+/// 改了字节长度,old_bs.len() 可能落在 UTF-8 字符中间,直接 panic abort 进程**。
+/// components 按路径段比对,对大小写不敏感,绝对安全。
+///
+/// 返回 Some(new_path) 表示前缀匹配并改写;None 表示不匹配,调用者保留原 path。
+fn rewrite_path_prefix(path_str: &str, old_root: &str, new_root: &str) -> Option<String> {
+    let path = Path::new(path_str);
+    let old = Path::new(old_root.trim_end_matches(['\\', '/']));
+
+    let path_comps: Vec<_> = path.components().collect();
+    let old_comps: Vec<_> = old.components().collect();
+    if old_comps.is_empty() || path_comps.len() < old_comps.len() {
+        return None;
+    }
+    // 逐段比较(忽略大小写)。Windows 文件系统不区分大小写,需要这种比对方式。
+    for (oc, pc) in old_comps.iter().zip(path_comps.iter()) {
+        let oc_str = oc.as_os_str().to_string_lossy().to_lowercase();
+        let pc_str = pc.as_os_str().to_string_lossy().to_lowercase();
+        if oc_str != pc_str {
+            return None;
+        }
+    }
+    // 拼接 new_root + 剩余 components
+    let mut new_pb = std::path::PathBuf::from(new_root.trim_end_matches(['\\', '/']));
+    for c in &path_comps[old_comps.len()..] {
+        new_pb.push(c.as_os_str());
+    }
+    Some(new_pb.to_string_lossy().to_string())
+}
+
+/// 把所有项目 path 字段中以旧根为前缀的部分替换成新根。
+fn rewrite_project_paths(data: &mut AppData, old_root: &str, new_root: &str) {
+    if old_root.is_empty() || old_root == new_root {
+        return;
+    }
+    for p in data.projects.iter_mut() {
+        if let Some(new_path) = rewrite_path_prefix(&p.path, old_root, new_root) {
+            p.path = new_path;
+        }
+    }
+}
+
+/// 一次性修复:遍历所有工作空间数据文件,如果 `workspace_root` 还是默认根(说明从没改过,
+/// 是旧版逻辑创建的),改成 `default_root / 工作空间名` 让多个工作空间互相隔离。
+///
+/// 同时**物理迁移**该工作空间下项目的目录:把旧 path 上存在的文件夹整体搬到新 path 下,
+/// 同盘符用 `fs::rename`(秒迁),跨盘符 fallback 到 `copy + remove`。
+///
+/// 返回 [修复的工作空间数, 物理迁移的项目数, 当前活动工作空间的最新 AppData]。
+#[tauri::command]
+fn repair_workspace_roots(app: tauri::AppHandle) -> Result<(usize, usize, AppData), String> {
+    let registry = read_registry(&app)?;
+    let default_root_str = store::default_root().to_string_lossy().to_string();
+    let mut fixed = 0usize;
+    let mut migrated_files = 0usize;
+
+    for ws in &registry.workspaces {
+        let path = store::workspace_data_path(&app, &ws.data_file);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut data: AppData = match serde_json::from_str(&raw) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let cur = data.settings.workspace_root.trim_end_matches(['\\', '/']).to_string();
+        let def = default_root_str.trim_end_matches(['\\', '/']).to_string();
+        if cur != def {
+            continue;
+        }
+        let safe = utils::safe_folder_name(&ws.name);
+        if safe.is_empty() {
+            continue;
+        }
+        let new_root = store::default_root().join(&safe).to_string_lossy().to_string();
+        let old_root = data.settings.workspace_root.clone();
+        // 确保新 root 目录已建
+        let _ = fs::create_dir_all(&new_root);
+        data.settings.workspace_root = new_root.clone();
+
+        // 先迁移文件,再 rewrite_project_paths 改 path 字段:
+        // 旧 path 物理存在且新 path 不存在 → 整目录搬过去。
+        // 用 rewrite_path_prefix 计算 dst,避免字节切片在含中文 / 大小写 / 分隔符差异时 panic。
+        for p in data.projects.iter() {
+            let src_str = p.path.clone();
+            let src = Path::new(&src_str);
+            if !src.exists() {
+                continue;
+            }
+            let dst_str = match rewrite_path_prefix(&src_str, &old_root, &new_root) {
+                Some(s) => s,
+                None => continue,
+            };
+            if dst_str == src_str {
+                continue;
+            }
+            let dst = Path::new(&dst_str);
+            if dst.exists() {
+                continue; // 目标已存在,不覆盖,留给用户手动处理
+            }
+            if let Some(parent) = dst.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            // 同盘符 rename 快;跨盘符走 copy + remove
+            let moved = if fs::rename(src, dst).is_ok() {
+                true
+            } else {
+                match utils::copy_dir_all(src, dst) {
+                    Ok(()) => fs::remove_dir_all(src).is_ok(),
+                    Err(_) => false,
+                }
+            };
+            if moved {
+                migrated_files += 1;
+            }
+        }
+
+        // 最后统一改 path 字段
+        rewrite_project_paths(&mut data, &old_root, &new_root);
+        let new_json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+        fs::write(&path, new_json).map_err(|e| e.to_string())?;
+        fixed += 1;
+    }
+
+    let data = read_data(&app)?;
+    Ok((fixed, migrated_files, data))
+}
+
+/// 一次性修复:把所有「path 不存在」的项目,重置到当前 workspace_root/{项目名} 下。
+/// 用于历史遗留:之前迁移工作目录但项目 path 没跟着改的场景。
+/// 不要求目标目录已存在(只是设置 path,真正打开时按需创建)。
+/// 返回 [修好的项目数, 最新的 AppData]。
+#[tauri::command]
+fn repair_project_paths(app: tauri::AppHandle) -> Result<(usize, AppData), String> {
+    let mut data = read_data(&app)?;
+    let root = data.settings.workspace_root.clone();
+    if root.is_empty() {
+        return Ok((0, data));
+    }
+    let root_path = Path::new(&root);
+    let mut fixed = 0usize;
+    for p in data.projects.iter_mut() {
+        if Path::new(&p.path).exists() {
+            continue;
+        }
+        // 重置 path 为 {workspace_root}/{项目名};即使目录还不存在也改,
+        // 后续打开 / 添加文件时再 fs::create_dir_all。
+        let candidate = root_path.join(&p.name);
+        let new_path = candidate.to_string_lossy().to_string();
+        if p.path != new_path {
+            p.path = new_path;
+            fixed += 1;
+        }
+    }
+    if fixed > 0 {
+        write_data(&app, &data)?;
+    }
+    Ok((fixed, data))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -330,7 +543,10 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
 #[tauri::command]
 fn update_categories(app: tauri::AppHandle, categories: Vec<String>) -> Result<AppData, String> {
     let mut data = read_data(&app)?;
-    data.settings.categories = categories;
+    // 写入时按名称排序(大小写不敏感),保证所有展示自动有序
+    let mut sorted = categories;
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    data.settings.categories = sorted;
     write_data(&app, &data)?;
     Ok(data)
 }
@@ -394,7 +610,10 @@ fn get_category_counts(
 // ═══════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
+fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    // 注意:不能用 `async fn` + 同步 rx.recv() — 会阻塞 async runtime 导致 dialog
+    // callback 永远拿不到执行,UI 卡住。改成 sync 命令(Tauri 自动 spawn_blocking)
+    // + std::sync::mpsc 阻塞这个独立 worker 线程,主 runtime 不受影响。
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().pick_folder(move |path| {
@@ -404,7 +623,8 @@ async fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn select_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+fn select_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    // 同 select_root,改 sync 防 async runtime 死锁
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
@@ -517,6 +737,12 @@ fn open_file(_app: tauri::AppHandle, file_path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_folder(_app: tauri::AppHandle, folder_path: String) -> Result<(), String> {
+    // 目录不存在(常见于:迁移工作目录后,旧分类目录还没建)就按需创建,
+    // 避免 Windows 资源管理器弹出「找不到文件」对话框。
+    let p = Path::new(&folder_path);
+    if !p.exists() {
+        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
     open::that(&folder_path).map_err(|e| e.to_string())
 }
 
@@ -1461,6 +1687,8 @@ fn main() {
             update_categories,
             set_note_assets_path,
             get_note_assets_dir,
+            repair_project_paths,
+            repair_workspace_roots,
             select_root,
             select_files,
             list_category_files_cmd,

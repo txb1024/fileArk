@@ -335,68 +335,117 @@ function NoteEditorBase({
     };
   }, [editor]);
 
-  // 给代码块注入「复制」按钮:监听编辑器 DOM 变化,扫描未处理的 codeBlock 容器,
-  // append 一个 contentEditable=false 的浮动按钮。BlockNote 不自带复制按钮。
+  // 代码块工具栏(复制 / 折叠)。
+  //
+  // 关键决策:**不向 BlockNote/ProseMirror 管控的 DOM 注入任何东西**。
+  // 之前尝试过 appendChild 到 .bn-block,PM 检测到子节点变化会重建整个 nodeView,
+  // 旧 .bn-block 被替换,我们的去重 attribute 失效,又被重新注入,触发新一轮 mutation
+  // → 死循环,表现为「鼠标一点疯狂刷出复制按钮」。
+  //
+  // 改用 React state + mouseover 委托:editor mouseover 时找最近的 codeBlock 容器,
+  // 计算它相对 .note-blocknote-root 的坐标,在 React 渲染树里 absolute 定位 toolbar。
+  // toolbar 完全独立于 PM,PM 永远不会感知到它。
   const rootElRef = useRef<HTMLDivElement | null>(null);
+  const hoverHideTimerRef = useRef<number | undefined>(undefined);
+  const [hoveredCode, setHoveredCode] = useState<{
+    codeContent: HTMLElement;
+    top: number;
+    right: number;
+    lineCount: number;
+    collapsed: boolean;
+  } | null>(null);
+
   useEffect(() => {
     const root = rootElRef.current;
     if (!root) return;
-    const copyLabel = language === "zh" ? "复制" : "Copy";
-    const copiedLabel = language === "zh" ? "已复制" : "Copied";
-    const failedLabel = language === "zh" ? "失败" : "Failed";
 
-    const enhance = () => {
-      const containers = root.querySelectorAll<HTMLElement>(
-        '.bn-block-content[data-content-type="codeBlock"]:not([data-copy-injected])',
+    const computeRect = (codeContent: HTMLElement) => {
+      const rootRect = root.getBoundingClientRect();
+      const targetRect = codeContent.getBoundingClientRect();
+      return {
+        top: targetRect.top - rootRect.top + 6,
+        right: rootRect.right - targetRect.right + 8,
+      };
+    };
+
+    const showFor = (codeContent: HTMLElement) => {
+      if (hoverHideTimerRef.current) {
+        window.clearTimeout(hoverHideTimerRef.current);
+        hoverHideTimerRef.current = undefined;
+      }
+      const rect = computeRect(codeContent);
+      const codeEl = codeContent.querySelector("code");
+      const lineCount = codeEl ? (codeEl.textContent ?? "").split("\n").length : 0;
+      const collapsed = codeContent.getAttribute("data-codeblock-collapsed") === "1";
+      setHoveredCode({ codeContent, top: rect.top, right: rect.right, lineCount, collapsed });
+    };
+
+    const scheduleHide = () => {
+      if (hoverHideTimerRef.current) window.clearTimeout(hoverHideTimerRef.current);
+      hoverHideTimerRef.current = window.setTimeout(() => {
+        setHoveredCode(null);
+      }, 120);
+    };
+
+    const handleOver = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // 在 toolbar 上 hover 也要保持显示(toolbar 自身不在编辑器内,事件不会从这里冒出)
+      const codeContent = target.closest<HTMLElement>(
+        '.bn-block-content[data-content-type="codeBlock"]',
       );
-      containers.forEach((container) => {
-        container.setAttribute("data-copy-injected", "1");
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "notes-codeblock-copy";
-        btn.contentEditable = "false";
-        btn.textContent = copyLabel;
-        btn.addEventListener("mousedown", (e) => e.preventDefault());
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const code = container.querySelector("code");
-          const text = code ? code.textContent ?? "" : "";
-          navigator.clipboard
-            .writeText(text)
-            .then(() => {
-              btn.textContent = copiedLabel;
-              btn.classList.add("copied");
-              window.setTimeout(() => {
-                btn.textContent = copyLabel;
-                btn.classList.remove("copied");
-              }, 1400);
-            })
-            .catch(() => {
-              btn.textContent = failedLabel;
-              window.setTimeout(() => (btn.textContent = copyLabel), 1400);
-            });
-        });
-        container.appendChild(btn);
-      });
+      if (codeContent) {
+        showFor(codeContent);
+      } else {
+        scheduleHide();
+      }
     };
 
-    let raf = 0;
-    const schedule = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        enhance();
-      });
-    };
-    schedule();
-    const obs = new MutationObserver(schedule);
-    obs.observe(root, { childList: true, subtree: true });
+    root.addEventListener("mouseover", handleOver, { passive: true });
     return () => {
-      obs.disconnect();
-      if (raf) cancelAnimationFrame(raf);
+      root.removeEventListener("mouseover", handleOver);
+      if (hoverHideTimerRef.current) window.clearTimeout(hoverHideTimerRef.current);
     };
-  }, [language]);
+  }, []);
+
+  const copyLabel = language === "zh" ? "复制" : "Copy";
+  const collapseLabel = language === "zh" ? "折叠" : "Collapse";
+  const expandLabel = language === "zh" ? "展开" : "Expand";
+
+  const handleCopyCode = useCallback(
+    async (codeContent: HTMLElement, btnEl: HTMLButtonElement) => {
+      const text = codeContent.querySelector("code")?.textContent ?? "";
+      const copied = language === "zh" ? "已复制" : "Copied";
+      const failed = language === "zh" ? "失败" : "Failed";
+      try {
+        await navigator.clipboard.writeText(text);
+        btnEl.textContent = copied;
+        btnEl.classList.add("copied");
+        window.setTimeout(() => {
+          btnEl.textContent = copyLabel;
+          btnEl.classList.remove("copied");
+        }, 1400);
+      } catch {
+        btnEl.textContent = failed;
+        window.setTimeout(() => (btnEl.textContent = copyLabel), 1400);
+      }
+    },
+    [language, copyLabel],
+  );
+
+  const toggleCollapseCode = useCallback((codeContent: HTMLElement) => {
+    const collapsed = codeContent.getAttribute("data-codeblock-collapsed") === "1";
+    if (collapsed) {
+      codeContent.removeAttribute("data-codeblock-collapsed");
+    } else {
+      codeContent.setAttribute("data-codeblock-collapsed", "1");
+    }
+    setHoveredCode((prev) =>
+      prev && prev.codeContent === codeContent ? { ...prev, collapsed: !collapsed } : prev,
+    );
+  }, []);
+
+  const COLLAPSIBLE_MIN_LINES = 8;
 
   const debounceRef = useRef<number | undefined>(undefined);
   const lastSerializedRef = useRef<string>("");
@@ -459,6 +508,39 @@ function NoteEditorBase({
           getItems={async (query) => getSlashMenuItems(query)}
         />
       </BlockNoteView>
+      {hoveredCode ? (
+        <div
+          className="notes-codeblock-toolbar"
+          style={{ top: hoveredCode.top, right: hoveredCode.right }}
+          // 阻止 mousedown 让编辑器失焦,避免 PM 把这次点击当 selection 变更
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {hoveredCode.lineCount >= COLLAPSIBLE_MIN_LINES ? (
+            <button
+              type="button"
+              className="notes-codeblock-collapse"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleCollapseCode(hoveredCode.codeContent);
+              }}
+            >
+              {hoveredCode.collapsed ? expandLabel : collapseLabel}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="notes-codeblock-copy"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleCopyCode(hoveredCode.codeContent, e.currentTarget);
+            }}
+          >
+            {copyLabel}
+          </button>
+        </div>
+      ) : null}
       {showOutline ? <NoteOutline editor={editor} language={language} /> : null}
     </div>
   );

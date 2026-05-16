@@ -310,7 +310,9 @@ pub struct MoveFileInput {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MigrateRootInput {
+    #[serde(rename = "oldRoot")]
     pub old_root: String,
+    #[serde(rename = "newRoot")]
     pub new_root: String,
     pub migrate: bool,
 }

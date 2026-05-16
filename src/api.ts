@@ -66,6 +66,8 @@ export const api: ArchiveApi = {
   updateCategories: (categories) => invoke<AppData>("update_categories", { categories }),
   setNoteAssetsPath: (path) => invoke<AppData>("set_note_assets_path", { path }),
   getNoteAssetsDir: () => invoke<string>("get_note_assets_dir"),
+  repairProjectPaths: () => invoke<[number, AppData]>("repair_project_paths"),
+  repairWorkspaceRoots: () => invoke<[number, number, AppData]>("repair_workspace_roots"),
   // 回收站
   getTrashItems: () => invoke<TrashItem[]>("get_trash_items"),
   deleteProject: (projectId) => invoke<AppData>("delete_project", { projectId }),
