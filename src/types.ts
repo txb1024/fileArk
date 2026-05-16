@@ -391,6 +391,7 @@ export type ArchiveApi = {
   ) => Promise<void>;
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
+  renameFileInPlace: (sourcePath: string, newName: string) => Promise<string>;
   readClipboardFiles: () => Promise<string[]>;
   startWatching: (path: string) => Promise<void>;
   stopWatching: () => Promise<void>;

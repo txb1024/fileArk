@@ -1272,9 +1272,9 @@ small,
 /* 拖文件 hover 在分类 item 上时(spring-loaded:0.5s 后自动切换) */
 .category-row-wrap.category-drag-over .category-row {
   background: var(--accent-soft);
-  border-color: var(--accent);
-  outline: 2px dashed var(--accent);
-  outline-offset: -2px;
+  border-color: transparent;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 6px;
 }
 
 /* 新增分类的 inline input 和按钮 */
@@ -1609,17 +1609,19 @@ small,
   border: 1px dashed transparent;
   border-radius: var(--radius-md);
   padding: 8px;
-  margin: 0 -8px -8px;
+  margin: 0;
   flex: 1;
-  min-height: 420px;
+  min-height: 200px;
+  overflow: auto;
   transition:
     border-color 0.15s ease,
     background 0.15s ease;
 }
 
 .file-drop-zone.dragging {
-  border-color: var(--accent);
+  border-color: transparent;
   background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .drop-hint {
@@ -1894,25 +1896,34 @@ small,
   font-size: 13px;
 }
 
-/* 文件行(非目录)显式允许 HTML5 拖拽。WebView2 + user-select: none 组合下,
-   不加 -webkit-user-drag: element 时浏览器会忽略 draggable=true 直接拒绝 dragstart。
-   光标改成 grab 给视觉提示。 */
-.file-table-row[draggable="true"] {
-  -webkit-user-drag: element;
-  cursor: grab;
-}
-.file-table-row[draggable="true"]:active {
-  cursor: grabbing;
-}
-
+/* 文件行光标:非目录 grab,目录 pointer。FileRow 内联 style 已设置,这里保留 hover 反馈。 */
 .file-table-row:hover {
   background: var(--accent-soft);
 }
 
-/* 拖拽状态 */
+/* 拖拽状态(dnd-kit useDraggable.isDragging 时加 .file-dragging) */
 .file-table-row.file-dragging {
   opacity: 0.5;
   background: var(--accent-soft);
+}
+
+/* dnd-kit DragOverlay 浮层 ghost(跟随鼠标的拖拽预览) */
+.dnd-overlay-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  color: var(--text);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grabbing;
 }
 
 .file-table-row.selected {
@@ -1968,20 +1979,44 @@ small,
 
 .file-section.folder-drag-over {
   background: var(--accent-soft);
-  border: 2px dashed var(--accent);
-  border-radius: 6px;
-  padding: 4px 8px;
-  /* 拖入时让标题区更明显,增大命中区域感知 */
-  outline: 3px solid var(--accent-soft);
-  outline-offset: 2px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  transition: background 120ms ease, box-shadow 120ms ease;
 }
+
 .file-section.folder-drag-over .file-section-title {
-  background: rgba(255, 255, 255, 0.4);
-  border-radius: 4px;
+  background: transparent;
 }
 
 .file-section.folder-drag-over .file-section-title span {
   color: var(--accent-strong);
+}
+
+/* RootDropTarget:当前分类的「根目录」drop 区域,Notion 风格高亮 */
+.file-section.root-drop-section {
+  min-height: 72px;
+  transition: background 120ms ease, box-shadow 120ms ease;
+  border-radius: 8px;
+}
+
+.file-section.root-drop-section.root-drag-over {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.file-section.root-drop-section.root-drag-over .file-section-title span {
+  color: var(--accent-strong);
+}
+
+/* rootFiles 为空时的提示文字 */
+.root-drop-hint-inline {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  margin: 4px 0;
 }
 
 .file-table-row span,

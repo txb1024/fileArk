@@ -96,6 +96,8 @@ export const api: ArchiveApi = {
     }),
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("copy_file_to", { input }),
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("move_file_to", { input }),
+  renameFileInPlace: (sourcePath: string, newName: string) =>
+    invoke<string>("rename_file_in_place", { sourcePath, newName }),
   readClipboardFiles: () => invoke<string[]>("read_clipboard_files"),
   startWatching: (path: string) => invoke<void>("start_watching", { path }),
   stopWatching: () => invoke<void>("stop_watching"),

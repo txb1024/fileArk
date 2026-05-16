@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -18,11 +18,24 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCenter,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import { api } from "../../api";
-import { getDroppedFilePaths, setupDragDrop } from "../../utils";
+import { setupDragDrop } from "../../utils";
 import { getFileIcon } from "../../utils/fileIcon";
 import type { AppData, CategoryFile, Language, Project } from "../../types";
-import { ConfirmDangerDialog } from "../../dialogs";
+import { ConfirmDangerDialog, RenameFileDialog } from "../../dialogs";
 import { EmptyState } from "../../components";
 import { storage } from "../../utils";
 
@@ -132,29 +145,47 @@ export function ProjectsView({
   // 拖文件到分类 item 上的高亮状态 + spring-loaded 自动切换 timer
   const [dragOverCategory, setDragOverCategory] = useState<string | null>(null);
   const categoryHoverTimerRef = useRef<number | undefined>(undefined);
-  const [draggingFile, setDraggingFile] = useState<CategoryFile | null>(
-    null
+  // 当前正在拖动的文件(dnd-kit DragOverlay 用)
+  const [activeDragFile, setActiveDragFile] = useState<CategoryFile | null>(null);
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
-  const draggingFileRef = useRef<CategoryFile | null>(null);
-  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pendingDeleteFile, setPendingDeleteFile] =
     useState<CategoryFile | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [renamingFile, setRenamingFile] = useState<CategoryFile | null>(null);
 
   // ── Effects ──────────────────────────────────────────────
 
+  // OS 外部拖入(整个 webview 范围):按指针位置路由到 category/folder/root。
+  // 用 ref 拿最新 routeOsDrop,避免 closure stale。enter/leave 控制 isDraggingFiles 高亮。
+  const addFilesRef = useRef<(paths?: string[]) => Promise<void>>(async () => {});
+  const routeOsDropRef = useRef<
+    (paths: string[], position: { x: number; y: number }) => Promise<void>
+  >(async () => {});
   useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
     let cancelled = false;
-    setupDragDrop(async (paths) => {
-      if (!cancelled) await addFilesToCategory(paths);
-    }).then((unlisten) => {
-      if (!cancelled) return () => unlisten();
-    });
-    return () => { cancelled = true; };
-  }, [activeProject, selectedCategory]);
+    setupDragDrop({
+      onEnter: () => setIsDraggingFiles(true),
+      onLeave: () => setIsDraggingFiles(false),
+      onDrop: (paths, position) => {
+        if (!cancelled) void routeOsDropRef.current(paths, position);
+      },
+    })
+      .then((u) => {
+        if (cancelled) u();
+        else unlistenFn = u;
+      })
+      .catch((err) => console.error("setupDragDrop failed:", err));
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
 
   // 项目切换时：重置分类选择（用 categoriesKey 避免引用变化导致误触发）
   const categoriesKey = data.settings.categories.join(",");
@@ -257,15 +288,6 @@ export function ProjectsView({
     return () => window.removeEventListener("focus", onFocus);
   }, [activeProject, selectedCategory, data.settings.categories]);
 
-  // ── External drop handler ────────────────────────────────
-
-  function handleFileDrop(e: React.DragEvent) {
-    e.preventDefault();
-    setIsDraggingFiles(false);
-    const paths = getDroppedFilePaths(e);
-    if (paths.length > 0) addFilesToCategory(paths);
-  }
-
   // ── Data ─────────────────────────────────────────────────
 
   async function refreshCategoryFiles() {
@@ -291,6 +313,51 @@ export function ProjectsView({
     setData(next);
     await refreshCategoryFiles();
   }
+  // 每次 render 同步最新引用,供单次注册的 OS-drop listener 调用
+  addFilesRef.current = addFilesToCategory;
+
+  /** OS 外部拖入路由:根据指针位置找到 data-drop-target 元素,把文件加到对应位置。
+   *  - category:X → 加到 X 分类根
+   *  - folder:Y   → copy 到 Y 子文件夹
+   *  - root / 未命中 → 加到当前 selectedCategory 根 */
+  async function routeOsDrop(paths: string[], position: { x: number; y: number }) {
+    if (!activeProject || paths.length === 0) return;
+    const el = document.elementFromPoint(position.x, position.y);
+    const targetEl = el?.closest("[data-drop-target]") as HTMLElement | null;
+    const target = targetEl?.getAttribute("data-drop-target") ?? null;
+
+    if (target?.startsWith("category:")) {
+      const category = target.slice("category:".length);
+      const next = await api.addFilesToCategory({
+        projectId: activeProject.id,
+        category,
+        filePaths: paths,
+      });
+      setData(next);
+      setSelectedCategory(category);
+      // refresh 由 selectedCategory 变化的 useEffect 自动触发
+    } else if (target?.startsWith("folder:")) {
+      const folderPath = target.slice("folder:".length);
+      try {
+        for (const sourcePath of paths) {
+          await api.copyFileTo({ sourcePath, targetPath: folderPath });
+        }
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          next.add(folderPath);
+          return next;
+        });
+        await refreshCategoryFiles();
+      } catch (err) {
+        console.error("OS drop to folder failed:", err);
+      }
+    } else {
+      // root 或未命中 → 加到当前分类
+      await addFilesToCategory(paths);
+    }
+  }
+  // 同步最新引用给 setupDragDrop listener
+  routeOsDropRef.current = routeOsDrop;
 
   async function createFolderInCategory() {
     if (!activeProject || !selectedCategory || !newFolderName.trim()) return;
@@ -387,103 +454,14 @@ export function ProjectsView({
     await refreshCategoryFiles();
   }
 
-  async function handleDropToFolder(targetPath: string) {
-    const currentDraggingFile = draggingFileRef.current;
-    if (!currentDraggingFile || !activeProject || !selectedCategory) return;
-    if (currentDraggingFile.path === targetPath) return;
-    try {
-      await api.moveFileTo({
-        sourcePath: currentDraggingFile.path,
-        targetPath,
-      });
-      await refreshCategoryFiles();
-      // 移成功后展开目标文件夹,让用户看到刚拖进去的文件
-      setExpandedFolders((prev) => {
-        const next = new Set(prev);
-        next.add(targetPath);
-        return next;
-      });
-    } catch (err) {
-      console.error("Move failed:", err);
-    }
-    draggingFileRef.current = null;
-    setDraggingFile(null);
-    setDragOverFolder(null);
-  }
-
-  /** 处理子文件夹上的 drop:
-   *  - 拖入外部文件(系统拖进来) → 逐个 copy 到子文件夹
-   *  - 拖动列表内文件 → 复用 handleDropToFolder 移动
-   *  事件已 stopPropagation 防止冒泡到外层 file-panel(否则会走 addFilesToCategory 加到分类根) */
-  async function handleAnyDropToFolder(e: React.DragEvent, targetPath: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOverFolder(null);
-    setIsDraggingFiles(false);
-    const externalPaths = getDroppedFilePaths(e);
-    if (externalPaths.length > 0) {
-      try {
-        for (const sourcePath of externalPaths) {
-          await api.copyFileTo({ sourcePath, targetPath });
-        }
-        await refreshCategoryFiles();
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          next.add(targetPath);
-          return next;
-        });
-      } catch (err) {
-        console.error("Copy to folder failed:", err);
-      }
-      return;
-    }
-    await handleDropToFolder(targetPath);
-  }
-
-  // ── Drag & Drop ─────────────────────────────────────────
-
-  function handleDragStart(file: CategoryFile) {
-    draggingFileRef.current = file;
-    setDraggingFile(file);
-  }
-
-  function handleDragEnd() {
-    draggingFileRef.current = null;
-    setDraggingFile(null);
-    setDragOverFolder(null);
-  }
-
-  function handleDragOver(
-    e: React.DragEvent,
-    folderPath: string
-  ) {
-    e.preventDefault();
-    e.stopPropagation();
-    const current = draggingFileRef.current;
-    // 内部拖动:仅文件可拖到子文件夹(目录不能拖到目录里)
-    if (current) {
-      if (!current.isDirectory && current.path !== folderPath) {
-        e.dataTransfer.dropEffect = "move";
-        setDragOverFolder(folderPath);
-      } else {
-        e.dataTransfer.dropEffect = "none";
-      }
-      return;
-    }
-    // 外部拖入(系统拖进来的文件):dataTransfer 有 file 类型
-    if (e.dataTransfer.types && Array.from(e.dataTransfer.types).includes("Files")) {
-      e.dataTransfer.dropEffect = "copy";
-      setDragOverFolder(folderPath);
-    }
-  }
-
-  // ── 拖文件到「分类 item」(左侧侧栏)──────────────────────
+  // ── dnd-kit 拖拽路由 ────────────────────────────────────
   //
-  // 行为:
-  // - hover 在分类 item 上 500ms 自动切换 selectedCategory(spring-loaded folder),
-  //   切换后用户可以继续往那个分类的子文件夹里拖
-  // - 直接 drop 在分类 item 上 → 文件移动到该分类的物理根目录,并切换视图
-  // 只接受内部拖动(file row),不在 toolbar 上接受外部 OS 拖入
+  // FileRow 用 useDraggable(id=file.path, data={file})
+  // category-row-wrap 用 useDroppable(id=`category:${name}`)
+  // file-section 用 useDroppable(id=`folder:${folderPath}`)
+  //
+  // onDndDragOver 负责 spring-loaded folder(hover 0.5s 自动切换 selectedCategory)
+  // onDndDragEnd 负责真正的 move 操作
 
   function clearCategoryHoverTimer() {
     if (categoryHoverTimerRef.current !== undefined) {
@@ -492,50 +470,88 @@ export function ProjectsView({
     }
   }
 
-  function handleCategoryDragOver(e: React.DragEvent, category: string) {
-    const current = draggingFileRef.current;
-    if (!current || current.isDirectory) return;
-    // 不允许拖到当前已选中的分类(本来就在这里)
-    if (category === selectedCategory) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = "move";
-    if (dragOverCategory !== category) {
-      setDragOverCategory(category);
+  function onDndDragStart(event: DragStartEvent) {
+    const file = event.active.data.current?.file as CategoryFile | undefined;
+    if (file) setActiveDragFile(file);
+  }
+
+  function onDndDragOver(event: DragOverEvent) {
+    const overId = event.over?.id ? String(event.over.id) : null;
+    if (overId?.startsWith("category:")) {
+      const category = overId.slice("category:".length);
+      if (category !== selectedCategory && dragOverCategory !== category) {
+        setDragOverCategory(category);
+        clearCategoryHoverTimer();
+        categoryHoverTimerRef.current = window.setTimeout(() => {
+          setSelectedCategory(category);
+          setDragOverCategory(null);
+          categoryHoverTimerRef.current = undefined;
+        }, 500);
+      }
+    } else if (dragOverCategory !== null) {
+      setDragOverCategory(null);
       clearCategoryHoverTimer();
-      categoryHoverTimerRef.current = window.setTimeout(() => {
+    }
+  }
+
+  async function onDndDragEnd(event: DragEndEvent) {
+    const file = event.active.data.current?.file as CategoryFile | undefined;
+    const overId = event.over?.id ? String(event.over.id) : null;
+    setActiveDragFile(null);
+    clearCategoryHoverTimer();
+    setDragOverCategory(null);
+    if (!file || !overId || !activeProject) return;
+
+    // 同目录跳过(避免 backend rename 加 (1))
+    const parentDir = parentPath(file.path).toLowerCase();
+
+    if (overId.startsWith("category:")) {
+      const category = overId.slice("category:".length);
+      const targetDir = `${activeProject.path}\\${category}`;
+      if (parentDir === targetDir.toLowerCase()) {
+        // 文件已在该分类根目录,仅切换视图
+        if (category !== selectedCategory) setSelectedCategory(category);
+        return;
+      }
+      try {
+        await api.moveFileTo({ sourcePath: file.path, targetPath: targetDir });
         setSelectedCategory(category);
-        // 切换后清掉高亮(此时它已变 active)
-        setDragOverCategory(null);
-        categoryHoverTimerRef.current = undefined;
-      }, 500);
+      } catch (err) {
+        console.error("Move to category failed:", err);
+      }
+    } else if (overId.startsWith("folder:")) {
+      const folderPath = overId.slice("folder:".length);
+      if (file.path === folderPath || file.isDirectory) return;
+      if (parentDir === folderPath.toLowerCase()) return; // 已经在该子文件夹
+      try {
+        await api.moveFileTo({ sourcePath: file.path, targetPath: folderPath });
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          next.add(folderPath);
+          return next;
+        });
+        await refreshCategoryFiles();
+      } catch (err) {
+        console.error("Move to folder failed:", err);
+      }
+    } else if (overId === "root") {
+      // 拖回当前分类根目录
+      if (!selectedCategory) return;
+      const targetDir = `${activeProject.path}\\${selectedCategory}`;
+      if (parentDir === targetDir.toLowerCase()) return; // 已经在分类根
+      try {
+        await api.moveFileTo({ sourcePath: file.path, targetPath: targetDir });
+        await refreshCategoryFiles();
+      } catch (err) {
+        console.error("Move to root failed:", err);
+      }
     }
   }
 
-  function handleCategoryDragLeave() {
+  function onDndDragCancel() {
+    setActiveDragFile(null);
     clearCategoryHoverTimer();
     setDragOverCategory(null);
-  }
-
-  async function handleCategoryDrop(e: React.DragEvent, category: string) {
-    const current = draggingFileRef.current;
-    if (!current || !activeProject) return;
-    clearCategoryHoverTimer();
-    setDragOverCategory(null);
-    if (category === selectedCategory) return;
-    e.preventDefault();
-    e.stopPropagation();
-    // 目标 = 该分类的物理根目录,backend 会按需创建
-    const targetPath = `${activeProject.path}\\${category}`;
-    try {
-      await api.moveFileTo({ sourcePath: current.path, targetPath });
-      setSelectedCategory(category);
-      // refresh 在 selectedCategory 变化的 useEffect 里会自动触发
-    } catch (err) {
-      console.error("Move to category failed:", err);
-    }
-    draggingFileRef.current = null;
-    setDraggingFile(null);
   }
 
   // 组件卸载时清掉 timer,避免 setSelectedCategory on unmounted
@@ -677,7 +693,15 @@ export function ProjectsView({
   // ── Render ──────────────────────────────────────────────
 
   return (
-    <section className="page projects-page">
+    <DndContext
+      sensors={dndSensors}
+      collisionDetection={closestCenter}
+      onDragStart={onDndDragStart}
+      onDragOver={onDndDragOver}
+      onDragEnd={onDndDragEnd}
+      onDragCancel={onDndDragCancel}
+    >
+      <section className="page projects-page">
       <div className="project-detail">
         <div
           className={`workspace-grid ${categoryCollapsed ? "category-collapsed" : ""}`}
@@ -703,22 +727,16 @@ export function ProjectsView({
               {data.settings.categories.map((category) => {
                 const isRenaming = renamingCategory === category;
                 return (
-                  <div
+                  <CategoryDropTarget
                     key={category}
-                    className={
-                      (category === selectedCategory
-                        ? "category-row-wrap active"
-                        : "category-row-wrap") +
-                      (dragOverCategory === category ? " category-drag-over" : "")
-                    }
+                    category={category}
+                    selectedCategory={selectedCategory}
+                    dragOverCategory={dragOverCategory}
                     onContextMenu={(e) => {
                       if (isRenaming) return;
                       e.preventDefault();
                       setCategoryContextMenu({ x: e.clientX, y: e.clientY, category });
                     }}
-                    onDragOver={(e) => handleCategoryDragOver(e, category)}
-                    onDragLeave={handleCategoryDragLeave}
-                    onDrop={(e) => void handleCategoryDrop(e, category)}
                   >
                     {isRenaming ? (
                       <input
@@ -750,7 +768,7 @@ export function ProjectsView({
                         )}
                       </button>
                     )}
-                  </div>
+                  </CategoryDropTarget>
                 );
               })}
               {!categoryCollapsed && (
@@ -918,73 +936,65 @@ export function ProjectsView({
               </span>
             </div>
 
-            {/* 文件列表 */}
+            {/* 文件列表
+                - 应用内拖拽:dnd-kit 管(RootDropTarget / FolderDropTarget / CategoryDropTarget)
+                - OS 外部拖入:setupDragDrop 全局 listener → 总是加到当前 selectedCategory 根 */}
             <div
               className={
-                isDraggingFiles
-                  ? "file-drop-zone dragging"
-                  : "file-drop-zone"
+                isDraggingFiles ? "file-drop-zone dragging" : "file-drop-zone"
               }
-              onDragEnter={(e) => {
-                e.preventDefault();
-                setIsDraggingFiles(true);
-              }}
-              onDragOver={(e) => e.preventDefault()}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node))
-                  setIsDraggingFiles(false);
-              }}
-              onDrop={handleFileDrop}
             >
               {isDraggingFiles && <div className="drop-hint">{t.dragHint}</div>}
               {filteredFiles.length === 0 ? (
-                <EmptyState
+                <RootDropTarget>
+                  <EmptyState
                     title={categoryFiles.length === 0 ? t.emptyCategory : t.noMatch}
                     body={categoryFiles.length === 0 ? t.emptyCategoryBody : t.noMatchBody}
                   />
+                </RootDropTarget>
               ) : (
                 <div
                   className={`file-table file-table-${fileScale} file-view-${fileViewMode}`}
                 >
-                  {/* 根目录文件 */}
-                  {rootFiles.length > 0 && (
-                    <div className="file-section">
-                      <div className="file-section-title">{t.rootFiles}</div>
-                      <div className={`file-items file-items-${fileViewMode}`}>
-                        {rootFiles.map((file) => {
-                          const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
-                          return (
-                            <FileRow
-                              key={file.path}
-                              file={file}
-                              fileViewMode={fileViewMode}
-                              fileScale={fileScale}
-                              index={idx}
-                              isSelected={selectedFiles.has(file.path)}
-                              draggingFile={draggingFile}
-                              onDragStart={handleDragStart}
-                              onDragEnd={handleDragEnd}
-                              onContextMenu={(x, y, f) =>
-                                setContextMenu({ x, y, file: f })
-                              }
-                              onClick={handleFileClick}
-                              onDoubleClick={handleFileDoubleClick}
-                              onPreviewFile={onPreviewFile}
-                            />
-                          );
-                        })}
+                  {/* 根目录文件(始终渲染为 root droppable,空时显示 hint) */}
+                  <RootDropTarget>
+                    {rootFiles.length > 0 ? (
+                      <>
+                        <div className="file-section-title">{t.rootFiles}</div>
+                        <div className={`file-items file-items-${fileViewMode}`}>
+                          {rootFiles.map((file) => {
+                            const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
+                            return (
+                              <FileRow
+                                key={file.path}
+                                file={file}
+                                fileViewMode={fileViewMode}
+                                fileScale={fileScale}
+                                index={idx}
+                                isSelected={selectedFiles.has(file.path)}
+                                onContextMenu={(x, y, f) =>
+                                  setContextMenu({ x, y, file: f })
+                                }
+                                onClick={handleFileClick}
+                                onDoubleClick={handleFileDoubleClick}
+                                onPreviewFile={onPreviewFile}
+                              />
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="root-drop-hint-inline">
+                        把文件拖到这里放入此分类根目录
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </RootDropTarget>
 
                   {/* 文件夹 */}
                   {folderSections.map((folder) => (
-                    <div
+                    <FolderDropTarget
                       key={folder.path}
-                      className={`file-section ${dragOverFolder === folder.path ? "folder-drag-over" : ""}`}
-                      onDragOver={(e) => handleDragOver(e, folder.path)}
-                      onDragLeave={() => setDragOverFolder(null)}
-                      onDrop={(e) => handleAnyDropToFolder(e, folder.path)}
+                      folderPath={folder.path}
                     >
                       <div
                         className="file-section-title"
@@ -1040,9 +1050,6 @@ export function ProjectsView({
                                 fileScale={fileScale}
                                 index={idx}
                                 isSelected={selectedFiles.has(file.path)}
-                                draggingFile={draggingFile}
-                                onDragStart={handleDragStart}
-                                onDragEnd={handleDragEnd}
                                 onContextMenu={(x, y, f) =>
                                   setContextMenu({ x, y, file: f })
                                 }
@@ -1054,7 +1061,7 @@ export function ProjectsView({
                           })}
                         </div>
                       )}
-                    </div>
+                    </FolderDropTarget>
                   ))}
                 </div>
               )}
@@ -1116,6 +1123,16 @@ export function ProjectsView({
             >
               <Copy size={14} />
               {t.copyFile}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                setRenamingFile(contextMenu.file);
+                setContextMenu(null);
+              }}
+            >
+              <Pencil size={14} />
+              重命名
             </button>
             {!contextMenu.file.isDirectory && (
               <button
@@ -1231,6 +1248,20 @@ export function ProjectsView({
         />
       )}
 
+      {/* 重命名文件/文件夹 */}
+      {renamingFile && (
+        <RenameFileDialog
+          currentName={renamingFile.name}
+          isDirectory={renamingFile.isDirectory}
+          onConfirm={async (newName) => {
+            await api.renameFileInPlace(renamingFile.path, newName);
+            setRenamingFile(null);
+            await refreshCategoryFiles();
+          }}
+          onClose={() => setRenamingFile(null)}
+        />
+      )}
+
       {/* 删除分类确认 — 只从全局列表移除,不动磁盘文件 */}
       {confirmDeleteCategory && (
         <ConfirmDangerDialog
@@ -1242,7 +1273,16 @@ export function ProjectsView({
           onClose={() => setConfirmDeleteCategory(null)}
         />
       )}
-    </section>
+      </section>
+      <DragOverlay dropAnimation={null}>
+        {activeDragFile && (
+          <div className="dnd-overlay-ghost">
+            {getFileIcon(activeDragFile.name, false, 16)}
+            <span>{activeDragFile.name}</span>
+          </div>
+        )}
+      </DragOverlay>
+    </DndContext>
   );
 }
 
@@ -1254,9 +1294,6 @@ interface FileRowProps {
   fileScale: FileScale;
   index: number;
   isSelected: boolean;
-  draggingFile: CategoryFile | null;
-  onDragStart: (file: CategoryFile) => void;
-  onDragEnd: () => void;
   onContextMenu: (x: number, y: number, file: CategoryFile) => void;
   onClick: (file: CategoryFile, index: number, e: React.MouseEvent) => void;
   onDoubleClick: (file: CategoryFile) => void;
@@ -1269,32 +1306,36 @@ function FileRow({
   fileScale,
   index,
   isSelected,
-  draggingFile,
-  onDragStart,
-  onDragEnd,
   onContextMenu,
   onClick,
   onDoubleClick,
   onPreviewFile,
 }: FileRowProps) {
   const icon = getFileIcon(file.name, file.isDirectory, fileViewMode === "grid" ? 32 : 16);
+  // dnd-kit:仅非目录可拖。listeners 绑到根元素接收 pointerdown。
+  // distance:5 activationConstraint(在 DndContext 顶层配)保证 click/dblclick 不被吞。
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: file.path,
+    data: { file },
+    disabled: file.isDirectory,
+  });
   return (
     <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
       data-file-path={file.path}
-      className={`file-table-row file-scale-${fileScale} ${file.isDirectory ? "is-directory" : ""} ${isSelected ? "selected" : ""} ${draggingFile?.path === file.path ? "file-dragging" : ""}`}
-      draggable={!file.isDirectory}
-      onDragStart={(e) => {
-        e.dataTransfer.effectAllowed = "move";
-        onDragStart(file);
-      }}
-      onDragEnd={onDragEnd}
+      className={`file-table-row file-scale-${fileScale} ${file.isDirectory ? "is-directory" : ""} ${isSelected ? "selected" : ""} ${isDragging ? "file-dragging" : ""}`}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu(e.clientX, e.clientY, file);
       }}
       onClick={(e) => onClick(file, index, e)}
       onDoubleClick={() => onDoubleClick(file)}
-      style={{ cursor: "pointer", userSelect: "none" }}
+      style={{
+        cursor: file.isDirectory ? "pointer" : "grab",
+        userSelect: "none",
+      }}
     >
       <div className="file-name-cell">
         <span className="file-icon">{icon}</span>
@@ -1311,6 +1352,7 @@ function FileRow({
       {!file.isDirectory && (
         <button
           className="icon-button preview-btn"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onPreviewFile(file.path, file.name);
@@ -1327,4 +1369,90 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function parentPath(p: string): string {
+  const idx = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  return idx >= 0 ? p.slice(0, idx) : "";
+}
+
+// ── CategoryDropTarget 子组件 ─────────────────────────────
+//
+// 用 useDroppable 接收 dnd-kit 拖来的文件。spring-loaded 切换由父组件的
+// dragOverCategory state + onDndDragOver 里的 timer 处理。
+
+interface CategoryDropTargetProps {
+  category: string;
+  selectedCategory: string;
+  dragOverCategory: string | null;
+  onContextMenu: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+}
+
+function CategoryDropTarget({
+  category,
+  selectedCategory,
+  dragOverCategory,
+  onContextMenu,
+  children,
+}: CategoryDropTargetProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: `category:${category}` });
+  const isActive = category === selectedCategory;
+  const showHover = (isOver || dragOverCategory === category) && !isActive;
+  return (
+    <div
+      ref={setNodeRef}
+      data-drop-target={`category:${category}`}
+      className={
+        (isActive ? "category-row-wrap active" : "category-row-wrap") +
+        (showHover ? " category-drag-over" : "")
+      }
+      onContextMenu={onContextMenu}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── FolderDropTarget 子组件 ───────────────────────────────
+//
+// dnd-kit useDroppable 接收应用内拖拽(file row → folder)。
+// OS 外部拖入(系统拖文件)由顶层 setupDragDrop 全局 listener 统一加到当前分类根。
+
+interface FolderDropTargetProps {
+  folderPath: string;
+  children: React.ReactNode;
+}
+
+function FolderDropTarget({ folderPath, children }: FolderDropTargetProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: `folder:${folderPath}` });
+  return (
+    <div
+      ref={setNodeRef}
+      data-drop-target={`folder:${folderPath}`}
+      className={`file-section ${isOver ? "folder-drag-over" : ""}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ── RootDropTarget 子组件 ─────────────────────────────────
+//
+// 当前分类的「根目录」drop target。包裹 EmptyState 或「根目录文件」区块。
+// 与 FolderDropTarget 在 DOM 上互为兄弟,closestCenter collision 能正确路由:
+// - 拖到 folder section 上 → folder droppable 命中
+// - 拖到 root section 上(folder 之外) → root droppable 命中
+
+function RootDropTarget({ children }: { children: React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: "root" });
+  return (
+    <div
+      ref={setNodeRef}
+      data-drop-target="root"
+      className={`file-section root-drop-section ${isOver ? "root-drag-over" : ""}`}
+    >
+      {children}
+    </div>
+  );
 }

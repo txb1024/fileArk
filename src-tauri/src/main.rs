@@ -822,6 +822,37 @@ fn move_file_to(input: MoveFileInput) -> Result<(), String> {
     }
 }
 
+/// 原地重命名文件/文件夹:目标名已存在则报错(不自动加 (1))。
+#[tauri::command]
+fn rename_file_in_place(source_path: String, new_name: String) -> Result<String, String> {
+    let source = Path::new(&source_path);
+    if !source.exists() {
+        return Err("源文件不存在".to_string());
+    }
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    if trimmed.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+        return Err("名称不能包含 \\ / : * ? \" < > |".to_string());
+    }
+    let parent = source.parent().ok_or("无法获取父目录")?;
+    let target = parent.join(trimmed);
+    // 同名(忽略大小写)且不是 case-only rename → 视为相同,直接返回
+    let current_name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if current_name == trimmed {
+        return Ok(source_path);
+    }
+    if target.exists() {
+        return Err(format!("已存在同名文件:{}", trimmed));
+    }
+    fs::rename(source, &target).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn read_file_content(file_path: String) -> Result<String, String> {
     let path = Path::new(&file_path);
@@ -1700,6 +1731,7 @@ fn main() {
             delete_file,
             copy_file_to,
             move_file_to,
+            rename_file_in_place,
             read_file_content,
             read_file_binary,
             get_preview_info,
