@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Plus,
   Search,
   StickyNote,
   Trash2,
@@ -17,14 +16,33 @@ import {
   FolderPlus,
   Pin,
   FileText,
+  Pencil,
+  ChevronLeft,
 } from "lucide-react";
 import { api } from "../api";
 import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { NoteTree, type RenamingTarget } from "../components/notes/NoteTree";
 import { ContextMenu, type ContextMenuItem } from "../components/notes/ContextMenu";
+import { EditorErrorBoundary } from "../components/notes/EditorErrorBoundary";
 
 type Language = "zh" | "en";
+
+/** 在树中按 id 查找便签元数据（纯函数，供 selectNote 同步更新 activeMeta 等复用） */
+function findNoteInTree(nodes: NoteTreeNode[], id: string): NoteMeta | null {
+  for (const n of nodes) {
+    if (n.type === "note" && n.id === id) {
+      const { type, ...meta } = n;
+      void type;
+      return meta;
+    }
+    if (n.type === "folder") {
+      const found = findNoteInTree(n.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
 const labels = {
   zh: {
@@ -34,7 +52,7 @@ const labels = {
     newFolder: "新建文件夹",
     pinned: "置顶",
     noNotes: "还没有便签",
-    noNotesBody: '点击右上角"新建便签"或"新建文件夹"开始。',
+    noNotesBody: "在空白处右键，或按 Ctrl+N 新建便签、Ctrl+Shift+N 新建文件夹。",
     deleteNoteConfirm: "删除此便签？将进入回收站。",
     deleteFolderConfirm: "删除此文件夹？里面所有便签会进入回收站。",
     lastSaved: "最后保存",
@@ -74,7 +92,7 @@ const labels = {
     newFolder: "New folder",
     pinned: "Pinned",
     noNotes: "No notes yet",
-    noNotesBody: 'Click "New note" or "New folder" to start.',
+    noNotesBody: "Right-click here, or press Ctrl+N to add a note, Ctrl+Shift+N for a folder.",
     deleteNoteConfirm: "Delete this note? It moves to trash.",
     deleteFolderConfirm: "Delete this folder? All notes inside go to trash.",
     lastSaved: "Last saved",
@@ -193,23 +211,7 @@ export function NotesView({ language }: NotesViewProps) {
     };
   }, [searchQuery]);
 
-  // 在树中按 id 查找
-  const findNoteInTree = useCallback((nodes: NoteTreeNode[], id: string): NoteMeta | null => {
-    for (const n of nodes) {
-      if (n.type === "note" && n.id === id) {
-        const { type, ...meta } = n;
-        void type;
-        return meta;
-      }
-      if (n.type === "folder") {
-        const found = findNoteInTree(n.children, id);
-        if (found) return found;
-      }
-    }
-    return null;
-  }, []);
-
-  // 同步 activeMeta
+  // 同步 activeMeta（树刷新 / 外部变更时与 activeId 对齐；点击便签时由 selectNote 抢先同步，避免一帧错位）
   useEffect(() => {
     if (!activeId) {
       setActiveMeta(null);
@@ -217,7 +219,7 @@ export function NotesView({ language }: NotesViewProps) {
     }
     const found = findNoteInTree(tree, activeId);
     setActiveMeta(found);
-  }, [activeId, tree, findNoteInTree]);
+  }, [activeId, tree]);
 
   // 编辑器实时上报的最新内容（debounce 还没到时存这里），切换便签前 flush
   const pendingContentRef = useRef<{ id: string; content: string } | null>(null);
@@ -230,8 +232,9 @@ export function NotesView({ language }: NotesViewProps) {
     if (selectionTokenRef.current === id) return;
     selectionTokenRef.current = id;
 
-    // 立刻反馈：高亮 + 清掉 tag 输入态
+    // 立刻反馈：高亮 + 与树数据同步的 meta（避免等 useEffect 才更新，与侧栏选中错位一帧）
     setActiveId(id);
+    setActiveMeta(findNoteInTree(tree, id));
     setTagInputId(null);
 
     // 切换前未保存的内容：fire-and-forget，不阻塞 UI
@@ -250,18 +253,20 @@ export function NotesView({ language }: NotesViewProps) {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [tree]);
 
-  // 展开父目录链
+  // 展开父目录链（子项多时整树重绘较重，用 transition 避免卡死主线程上的其它交互）
   const expandParents = useCallback((parent: string) => {
     if (!parent) return;
-    setExpandedPaths((prev) => {
-      const next = new Set(prev);
-      const parts = parent.split("/");
-      for (let i = 1; i <= parts.length; i++) {
-        next.add(parts.slice(0, i).join("/"));
-      }
-      return next;
+    startTransition(() => {
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        const parts = parent.split("/");
+        for (let i = 1; i <= parts.length; i++) {
+          next.add(parts.slice(0, i).join("/"));
+        }
+        return next;
+      });
     });
   }, []);
 
@@ -366,13 +371,15 @@ export function NotesView({ language }: NotesViewProps) {
     [quickCreateNote, openCreateFolder]
   );
 
-  // 文件夹展开/收起
+  // 文件夹展开/收起（同上：大目录一次挂载上千 DOM + React 协调会长时间阻塞）
   const toggleFolder = useCallback((path: string) => {
-    setExpandedPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
+    startTransition(() => {
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
     });
   }, []);
 
@@ -414,6 +421,23 @@ export function NotesView({ language }: NotesViewProps) {
 
   // 稳定的关闭引用，避免 ContextMenu 每次重渲染都重新绑 document 事件
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  /** 侧栏空白处右键：不在树行 / 搜索行 / 空状态块内时，等同根目录空白菜单 */
+  const handleNotesListBackgroundContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      if (showTrash || searchResults) return;
+      const el = e.target as HTMLElement;
+      if (el.closest(".note-tree-row, .notes-item, .notes-empty, .notes-search-results")) return;
+      e.preventDefault();
+      handleContextMenu(e, null);
+    },
+    [showTrash, searchResults, handleContextMenu]
+  );
+
+  const openNotesTrash = useCallback(() => {
+    setShowTrash(true);
+    void loadTrashed();
+  }, [loadTrashed]);
 
   // 删除
   const handleDeleteConfirmed = useCallback(
@@ -461,7 +485,7 @@ export function NotesView({ language }: NotesViewProps) {
       await api.updateNoteMeta(id, { tags: [...meta.tags, tag] });
       await loadTree();
     },
-    [tree, findNoteInTree, loadTree]
+    [tree, loadTree]
   );
 
   const removeTag = useCallback(
@@ -471,7 +495,7 @@ export function NotesView({ language }: NotesViewProps) {
       await api.updateNoteMeta(id, { tags: meta.tags.filter((x) => x !== tag) });
       await loadTree();
     },
-    [tree, findNoteInTree, loadTree]
+    [tree, loadTree]
   );
 
   // 回收站
@@ -564,7 +588,7 @@ export function NotesView({ language }: NotesViewProps) {
       <div className="notes-sidebar">
         <div className="notes-toolbar">
           <div className="notes-search-box">
-            <Search size={15} />
+            <Search size={14} />
             <input
               type="text"
               placeholder={t.searchPlaceholder}
@@ -573,42 +597,13 @@ export function NotesView({ language }: NotesViewProps) {
             />
             {searchQuery && (
               <button className="notes-search-clear" onClick={() => setSearchQuery("")}>
-                <X size={14} />
+                <X size={12} />
               </button>
             )}
           </div>
         </div>
 
-        {/* 根目录新建按钮 */}
-        <div className="notes-tree-actions-bar">
-          <button
-            className="compact-button"
-            onClick={() => quickCreateNote("")}
-            title={t.rootNote}
-          >
-            <Plus size={13} /> {t.newNote}
-          </button>
-          <button
-            className="compact-button"
-            onClick={() => openCreateFolder("")}
-            title={t.rootFolder}
-          >
-            <FolderPlus size={13} /> {t.newFolder}
-          </button>
-          <button
-            className={showTrash ? "compact-button danger" : "compact-button"}
-            onClick={() => {
-              setShowTrash((v) => !v);
-              if (!showTrash) loadTrashed();
-            }}
-            title={showTrash ? t.backToTree : t.trash}
-          >
-            <Trash2 size={13} />
-            {trashedNotes.length > 0 && !showTrash && ` (${trashedNotes.length})`}
-          </button>
-        </div>
-
-        <div className="notes-list">
+        <div className="notes-list" onContextMenu={handleNotesListBackgroundContextMenu}>
           {showTrash ? (
             <TrashList
               items={trashedNotes}
@@ -620,6 +615,7 @@ export function NotesView({ language }: NotesViewProps) {
               emptyTrashConfirm={emptyTrashConfirm}
               setEmptyTrashConfirm={setEmptyTrashConfirm}
               onEmptyTrash={handleEmptyTrash}
+              onBackToTree={() => setShowTrash(false)}
             />
           ) : searchResults ? (
             <SearchResults
@@ -637,28 +633,23 @@ export function NotesView({ language }: NotesViewProps) {
               <p className="muted small">{t.noNotesBody}</p>
             </div>
           ) : (
-            <div onContextMenu={(e) => {
-              // 树外的空白处右键 = 在根目录创建
-              if (e.target === e.currentTarget) handleContextMenu(e, null);
-            }}>
-              <NoteTree
-                nodes={tree}
-                activeId={activeId}
-                expandedPaths={expandedPaths}
-                onSelect={selectNote}
-                onToggleFolder={toggleFolder}
-                onCreateChild={handleCreateChild}
-                onContextMenu={handleContextMenu}
-                onRequestRename={requestRename}
-                pendingFolder={pendingFolder}
-                onSubmitFolder={submitCreateFolder}
-                onCancelFolder={cancelCreateFolder}
-                renamingTarget={renamingTarget}
-                onSubmitRename={submitRename}
-                onCancelRename={cancelRename}
-                language={language}
-              />
-            </div>
+            <NoteTree
+              nodes={tree}
+              activeId={activeId}
+              expandedPaths={expandedPaths}
+              onSelect={selectNote}
+              onToggleFolder={toggleFolder}
+              onCreateChild={handleCreateChild}
+              onContextMenu={handleContextMenu}
+              onRequestRename={requestRename}
+              pendingFolder={pendingFolder}
+              onSubmitFolder={submitCreateFolder}
+              onCancelFolder={cancelCreateFolder}
+              renamingTarget={renamingTarget}
+              onSubmitRename={submitRename}
+              onCancelRename={cancelRename}
+              language={language}
+            />
           )}
         </div>
       </div>
@@ -763,15 +754,20 @@ export function NotesView({ language }: NotesViewProps) {
                   : "notes-editor-content loading"
               }
             >
-              <NoteEditor
-                noteId={editorPayload?.id ?? activeMeta.id}
-                content={editorPayload?.content ?? ""}
-                onContentChange={handleContentChange}
-                onPendingChange={handlePendingChange}
-                language={language}
-                showOutline={outlineVisible}
-                toolbarPinned={toolbarPinned}
-              />
+              <EditorErrorBoundary
+                resetKey={editorPayload?.id ?? activeMeta.id}
+                fallbackText={language === "zh" ? "编辑器临时出错" : "Editor crashed"}
+              >
+                <NoteEditor
+                  noteId={editorPayload?.id ?? activeMeta.id}
+                  content={editorPayload?.content ?? ""}
+                  onContentChange={handleContentChange}
+                  onPendingChange={handlePendingChange}
+                  language={language}
+                  showOutline={outlineVisible}
+                  toolbarPinned={toolbarPinned}
+                />
+              </EditorErrorBoundary>
             </div>
           </>
         ) : (
@@ -802,6 +798,7 @@ export function NotesView({ language }: NotesViewProps) {
             requestRename,
             togglePin,
             setConfirmDelete,
+            openNotesTrash,
           })}
         />
       )}
@@ -846,6 +843,7 @@ interface BuildMenuArgs {
   requestRename: (node: NoteTreeNode) => void;
   togglePin: (id: string, currentPinned: boolean) => void;
   setConfirmDelete: (node: NoteTreeNode) => void;
+  openNotesTrash: () => void;
 }
 
 function buildContextMenuItems({
@@ -856,32 +854,36 @@ function buildContextMenuItems({
   requestRename,
   togglePin,
   setConfirmDelete,
+  openNotesTrash,
 }: BuildMenuArgs): ContextMenuItem[] {
-  // 空白处右键 = 在根目录创建
+  // 空白处右键 = 在根目录创建 + 进入回收站（顶部回收站入口已移除）
   if (!node) {
     return [
-      { label: t.newNote, onClick: () => quickCreateNote("") },
-      { label: t.newFolder, onClick: () => openCreateFolder("") },
+      { label: t.newNote, icon: <FileText size={14} />, onClick: () => quickCreateNote("") },
+      { label: t.newFolder, icon: <FolderPlus size={14} />, onClick: () => openCreateFolder("") },
+      { divider: true },
+      { label: t.trash, icon: <Trash2 size={14} />, onClick: () => openNotesTrash() },
     ];
   }
   if (node.type === "folder") {
     return [
-      { label: t.newNote, onClick: () => quickCreateNote(node.path) },
-      { label: t.newFolder, onClick: () => openCreateFolder(node.path) },
+      { label: t.newNote, icon: <FileText size={14} />, onClick: () => quickCreateNote(node.path) },
+      { label: t.newFolder, icon: <FolderPlus size={14} />, onClick: () => openCreateFolder(node.path) },
       { divider: true },
-      { label: t.rename, onClick: () => requestRename(node) },
-      { label: t.delete, onClick: () => setConfirmDelete(node), danger: true },
+      { label: t.rename, icon: <Pencil size={14} />, onClick: () => requestRename(node) },
+      { label: t.delete, icon: <Trash2 size={14} />, onClick: () => setConfirmDelete(node) },
     ];
   }
   // note
   return [
     {
       label: node.pinned ? t.unpin : t.pin,
+      icon: node.pinned ? <PinOff size={14} /> : <Pin size={14} />,
       onClick: () => togglePin(node.id, node.pinned),
     },
-    { label: t.rename, onClick: () => requestRename(node) },
+    { label: t.rename, icon: <Pencil size={14} />, onClick: () => requestRename(node) },
     { divider: true },
-    { label: t.delete, onClick: () => setConfirmDelete(node), danger: true },
+    { label: t.delete, icon: <Trash2 size={14} />, onClick: () => setConfirmDelete(node) },
   ];
 }
 
@@ -911,6 +913,8 @@ function SearchResults({ results, activeId, onSelect, t, language, formatTime }:
         <div
           key={note.id}
           className={"notes-item" + (activeId === note.id ? " active" : "")}
+          // 与 NoteTree 一致：阻止默认 mousedown 抢焦点，避免 vditor blur 触发 Lute 整篇 IR→MD 同步卡死主线程
+          onMouseDown={(e) => e.preventDefault()}
           onClick={() => onSelect(note.id)}
         >
           <div className="notes-item-header">
@@ -942,6 +946,7 @@ interface TrashListProps {
   emptyTrashConfirm: boolean;
   setEmptyTrashConfirm: (v: boolean) => void;
   onEmptyTrash: () => void;
+  onBackToTree: () => void;
 }
 function TrashList({
   items,
@@ -953,10 +958,15 @@ function TrashList({
   emptyTrashConfirm,
   setEmptyTrashConfirm,
   onEmptyTrash,
+  onBackToTree,
 }: TrashListProps) {
   if (items.length === 0) {
     return (
       <div className="notes-empty">
+        <button type="button" className="notes-trash-back-btn" onClick={onBackToTree}>
+          <ChevronLeft size={18} />
+          {t.backToTree}
+        </button>
         <Trash2 size={32} />
         <p>{t.trashEmpty}</p>
       </div>
@@ -964,6 +974,12 @@ function TrashList({
   }
   return (
     <>
+      <div className="notes-trash-back-row">
+        <button type="button" className="notes-trash-back-btn" onClick={onBackToTree}>
+          <ChevronLeft size={18} />
+          {t.backToTree}
+        </button>
+      </div>
       {items.map((item) => (
         <div key={item.trashId} className="notes-item notes-trash-item">
           <div className="notes-item-header">

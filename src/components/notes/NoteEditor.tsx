@@ -44,7 +44,7 @@ function readFileAsBase64(file: File): Promise<string> {
  * - 内容相同时跳过 setValue
  * - setValue 之前给容器加 .editor-busy class，让 CSS 渲染一个 skeleton
  *   覆盖编辑区，setValue 同步阻塞主线程时用户看到的是 loading 而非旧内容
- * - setValue 推到 rAF 之后执行，让 React commit + 浏览器 paint 先发生
+ * - setValue 先 rAF 再 setTimeout(0)：让 React commit 与 skeleton paint 先完成，减轻与 vditor blur/Lute 同帧争抢导致的整窗长时间无响应
  * - 移除 mousemove 工具栏 hover（永久顶部工具栏，去掉 60Hz 监听器）
  */
 function NoteEditorBase({
@@ -67,8 +67,9 @@ function NoteEditorBase({
   const renderedNoteId = useRef<string | null>(null);
   // 异步初始化期间，最新的 (noteId, content) 暂存这里，after 回调消费
   const pendingPayload = useRef<{ noteId: string; content: string } | null>(null);
-  // 切换便签时正在排队的 setValue rAF id
-  const pendingApplyHandle = useRef<number | null>(null);
+  // 切换便签时正在排队的 setValue：先 rAF 再 setTimeout(0)，让浏览器先 paint skeleton，避免大文档 setValue 与 blur 争同一帧
+  const pendingApplyRafRef = useRef<number | null>(null);
+  const pendingApplyTimerRef = useRef<number | null>(null);
 
   // 保持回调引用最新
   useEffect(() => {
@@ -83,6 +84,12 @@ function NoteEditorBase({
     container.classList.add("editor-busy");
 
     const vditor = new Vditor(container, {
+      // 关键：让 vditor 从本地（public/vditor）加载 lute.min.js / i18n / icons / hljs 等，
+      // 不要走默认的 https://unpkg.com/vditor@x.y.z。国内网络访问 unpkg 极易超时，
+      // 之前会导致整个编辑器初始化阻塞，UI 假死。
+      // 本地路径由 vite 把 public/vditor 复制到构建产物根目录提供。
+      cdn: `${location.origin}/vditor`,
+
       // ir = instant rendering，类似 Typora 的"输入即所见"。
       // 输入 `# 空格` 立刻成 H1、`**xx**` 立刻成粗体；与 wysiwyg 的纯富文本不同。
       mode: "ir",
@@ -144,9 +151,14 @@ function NoteEditorBase({
         },
       },
 
+      // 完全禁用 hint:emoji 空字典 + 触发字符为空,避免 vditor 内部 fillEmoji
+      // 在空字典上调用 setStart 抛 IndexSizeError(offset = -1 被当 unsigned)
       hint: {
         parse: false,
+        delay: 200,
         emoji: {},
+        emojiPath: "",
+        extend: [],
       },
 
       upload: {
@@ -212,14 +224,28 @@ function NoteEditorBase({
 
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      if (pendingApplyHandle.current !== null) {
-        cancelAnimationFrame(pendingApplyHandle.current);
-        pendingApplyHandle.current = null;
+      if (pendingApplyRafRef.current !== null) {
+        cancelAnimationFrame(pendingApplyRafRef.current);
+        pendingApplyRafRef.current = null;
       }
+      if (pendingApplyTimerRef.current !== null) {
+        clearTimeout(pendingApplyTimerRef.current);
+        pendingApplyTimerRef.current = null;
+      }
+      const wasReady = isReady.current;
       isReady.current = false;
       pendingPayload.current = null;
       renderedNoteId.current = null;
-      vditor.destroy();
+      // vditor 异步初始化未完成时,destroy 会读到 undefined .vditor.element,
+      // 在 React StrictMode 的 mount→unmount→mount 路径下尤其容易触发。
+      // 没 ready 时直接跳过 destroy（vditor 内部资源会被 GC 回收）。
+      if (wasReady) {
+        try {
+          vditor.destroy();
+        } catch {
+          // 兜底:即使 ready 标记为 true,destroy 内部某些步骤仍可能 race
+        }
+      }
       vditorRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -243,28 +269,47 @@ function NoteEditorBase({
     // 父组件保证 (noteId, content) 是配对的，所以 noteId 没变就一定是同篇便签
     if (renderedNoteId.current === noteId) return;
 
-    // 立刻显示 skeleton，再下一帧执行 setValue
+    // 立刻显示 skeleton；rAF + 0ms 定时器把 setValue 推到下一任务，让 paint 与 vditor 内部失焦逻辑先落地，减轻整窗假死感
     container.classList.add("editor-busy");
 
-    if (pendingApplyHandle.current !== null) {
-      cancelAnimationFrame(pendingApplyHandle.current);
+    if (pendingApplyRafRef.current !== null) {
+      cancelAnimationFrame(pendingApplyRafRef.current);
+      pendingApplyRafRef.current = null;
     }
-    pendingApplyHandle.current = requestAnimationFrame(() => {
-      pendingApplyHandle.current = null;
-      isSettingValue.current = true;
-      try {
-        vditor.setValue(content, true);
-        vditor.clearStack();
-        lastSyncedContent.current = content;
-        renderedNoteId.current = noteId;
-      } finally {
-        isSettingValue.current = false;
-        // setValue 同步完成后再下一帧移除 busy（让用户看到的"loading→内容"过渡更稳）
-        requestAnimationFrame(() => {
-          container.classList.remove("editor-busy");
-        });
-      }
+    if (pendingApplyTimerRef.current !== null) {
+      clearTimeout(pendingApplyTimerRef.current);
+      pendingApplyTimerRef.current = null;
+    }
+
+    pendingApplyRafRef.current = requestAnimationFrame(() => {
+      pendingApplyRafRef.current = null;
+      pendingApplyTimerRef.current = window.setTimeout(() => {
+        pendingApplyTimerRef.current = null;
+        isSettingValue.current = true;
+        try {
+          vditor.setValue(content, true);
+          vditor.clearStack();
+          lastSyncedContent.current = content;
+          renderedNoteId.current = noteId;
+        } finally {
+          isSettingValue.current = false;
+          requestAnimationFrame(() => {
+            container.classList.remove("editor-busy");
+          });
+        }
+      }, 0);
     });
+
+    return () => {
+      if (pendingApplyRafRef.current !== null) {
+        cancelAnimationFrame(pendingApplyRafRef.current);
+        pendingApplyRafRef.current = null;
+      }
+      if (pendingApplyTimerRef.current !== null) {
+        clearTimeout(pendingApplyTimerRef.current);
+        pendingApplyTimerRef.current = null;
+      }
+    };
   }, [noteId, content]);
 
   // 同步 outline 显示

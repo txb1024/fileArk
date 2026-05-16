@@ -8,7 +8,7 @@ import {
   Plus,
   FolderPlus,
 } from "lucide-react";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { NoteTreeNode, NoteFolderNode, NoteFileNode } from "../../types";
 
 /** 树内 inline 编辑请求：创建新文件夹（parent="" 表示根目录） */
@@ -81,6 +81,18 @@ function getKey(node: NoteTreeNode): string {
   return node.type === "folder" ? `f:${node.path}` : `n:${node.id}`;
 }
 
+/** 超过此数量时延迟挂载子树，避免点击展开文件夹时主线程一次性协调/布局卡死 */
+const DEFER_CHILDREN_THRESHOLD = 200;
+
+function scheduleIdleOrTimeout(run: () => void, timeoutMs: number): () => void {
+  if (typeof requestIdleCallback !== "undefined") {
+    const id = requestIdleCallback(run, { timeout: timeoutMs });
+    return () => cancelIdleCallback(id);
+  }
+  const id = window.setTimeout(run, 0);
+  return () => clearTimeout(id);
+}
+
 interface ItemProps extends NoteTreeProps {
   node: NoteTreeNode;
   depth: number;
@@ -112,12 +124,44 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
   const expanded = expandedPaths.has(node.path);
   const isRenaming = renamingTarget?.kind === "folder" && renamingTarget.key === node.path;
   const showChildPending = expanded && pendingFolder?.parent === node.path;
+  const childCount = node.children.length;
+  const [deferredChildrenReady, setDeferredChildrenReady] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) {
+      setDeferredChildrenReady(false);
+      return;
+    }
+    if (childCount <= DEFER_CHILDREN_THRESHOLD) {
+      setDeferredChildrenReady(true);
+      return;
+    }
+    setDeferredChildrenReady(false);
+    let cancelled = false;
+    const cancel = scheduleIdleOrTimeout(() => {
+      if (!cancelled) setDeferredChildrenReady(true);
+    }, 400);
+    return () => {
+      cancelled = true;
+      cancel();
+    };
+  }, [expanded, childCount, node.path]);
+
+  const showNestedTree =
+    expanded && childCount > 0 && (childCount <= DEFER_CHILDREN_THRESHOLD || deferredChildrenReady);
 
   return (
     <>
       <div
         className="note-tree-row note-tree-folder"
         style={{ paddingLeft: 8 + depth * 14 }}
+        // 阻止焦点从 vditor contenteditable 转移到这一行：
+        // 否则 vditor blur 会同步触发 lute WASM 把整个 IR DOM 拍回 Markdown,
+        // 大文档下主线程会冻住几百毫秒到几秒,看起来就像应用卡死。
+        // 重命名输入框需要 focus 时不拦截。
+        onMouseDown={(e) => {
+          if (!isRenaming) e.preventDefault();
+        }}
         onClick={() => {
           if (isRenaming) return;
           onToggleFolder(node.path);
@@ -179,7 +223,7 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
           </div>
         )}
       </div>
-      {expanded && (showChildPending || node.children.length > 0) && (
+      {expanded && (showChildPending || childCount > 0) && (
         <>
           {showChildPending && (
             <InlineFolderInput
@@ -190,8 +234,18 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
               language={language}
             />
           )}
-          {node.children.length > 0 && (
+          {childCount > 0 && showNestedTree && (
             <NoteTree {...props} nodes={node.children} depth={depth + 1} />
+          )}
+          {childCount > 0 && expanded && !showNestedTree && (
+            <div
+              className="note-tree-heavy-hint muted small"
+              style={{ paddingLeft: 8 + (depth + 1) * 14 + 13, paddingTop: 4, paddingBottom: 8 }}
+            >
+              {language === "zh"
+                ? `正在加载 ${childCount} 项…`
+                : `Loading ${childCount} items…`}
+            </div>
           )}
         </>
       )}
@@ -199,7 +253,7 @@ function FolderRow(props: ItemProps & { node: NoteFolderNode }) {
   );
 }
 
-function NoteRow(props: ItemProps & { node: NoteFileNode }) {
+function NoteRowBase(props: ItemProps & { node: NoteFileNode }) {
   const {
     node,
     depth,
@@ -218,6 +272,11 @@ function NoteRow(props: ItemProps & { node: NoteFileNode }) {
     <div
       className={"note-tree-row note-tree-note" + (active ? " active" : "")}
       style={{ paddingLeft: 8 + depth * 14 + 13 /* 占 chevron 位置 */ }}
+      // 同 FolderRow:阻止焦点离开 vditor,避免 blur 触发 lute 同步重解析。
+      // 切便签是必然要做的事,后续 selectNote → setValue 会同步替换内容。
+      onMouseDown={(e) => {
+        if (!isRenaming) e.preventDefault();
+      }}
       onClick={() => {
         if (isRenaming) return;
         onSelect(node.id);
@@ -247,6 +306,26 @@ function NoteRow(props: ItemProps & { node: NoteFileNode }) {
     </div>
   );
 }
+
+/**
+ * 叶子节点级 memo:折叠/展开文件夹时,setExpandedPaths 产生新 Set,
+ * 整个 NoteTree 默认会一路重渲染到所有 NoteRow。这里精确比较真正影响
+ * NoteRow 的 4 个状态(node 引用、depth、active、是否在 rename),其余
+ * callback / 全局 state 引用变化都跳过。
+ */
+const NoteRow = memo(NoteRowBase, (prev, next) => {
+  if (prev.node !== next.node) return false;
+  if (prev.depth !== next.depth) return false;
+  const prevActive = prev.activeId === prev.node.id;
+  const nextActive = next.activeId === next.node.id;
+  if (prevActive !== nextActive) return false;
+  const prevRenaming =
+    prev.renamingTarget?.kind === "note" && prev.renamingTarget.key === prev.node.id;
+  const nextRenaming =
+    next.renamingTarget?.kind === "note" && next.renamingTarget.key === next.node.id;
+  if (prevRenaming !== nextRenaming) return false;
+  return true;
+});
 
 /** 创建文件夹的 inline 输入行（带文件夹图标 + 缩进，对齐普通 FolderRow） */
 function InlineFolderInput({
