@@ -152,6 +152,17 @@ pub fn read_data(app: &AppHandle) -> Result<AppData, String> {
             data.settings
                 .categories
                 .sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            // 老数据兼容:project.categories 缺失时,补成 settings.categories 副本,
+            // 之后该项目的分类完全独立。
+            for project in &mut data.projects {
+                if project.categories.is_empty() {
+                    project.categories = data.settings.categories.clone();
+                } else {
+                    project
+                        .categories
+                        .sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                }
+            }
             Ok(data)
         }
         Err(_) => {

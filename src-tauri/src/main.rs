@@ -154,6 +154,8 @@ fn create_project(app: tauri::AppHandle, input: CreateProjectInput) -> Result<Ap
         updated_at: ts.clone(),
         last_opened_at: None,
         recent_files: vec![],
+        // 新项目的分类初始化为当前全局默认分类的副本,之后完全独立
+        categories: data.settings.categories.clone(),
     };
 
     let name_clone = project.name.clone();
@@ -549,6 +551,158 @@ fn update_categories(app: tauri::AppHandle, categories: Vec<String>) -> Result<A
     data.settings.categories = sorted;
     write_data(&app, &data)?;
     Ok(data)
+}
+
+/// 更新单个项目的分类列表(项目级独立,不影响其他项目)。
+/// 名称按大小写不敏感排序后写入,保证侧栏展示顺序稳定。
+#[tauri::command]
+fn update_project_categories(
+    app: tauri::AppHandle,
+    project_id: String,
+    categories: Vec<String>,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let mut sorted = categories;
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let project = data
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "项目不存在".to_string())?;
+    project.categories = sorted;
+    project.updated_at = utils::now_rfc3339();
+    write_data(&app, &data)?;
+    Ok(data)
+}
+
+/// 扫描项目根目录下的一级子目录,把结果同步到 project.categories(过滤隐藏目录)。
+/// 用户在文件管理器里增删/重命名分类目录后,前端调用此命令把内存 categories
+/// 与磁盘对齐。文件监视器触发时也会再调一次,保持双向一致。
+#[tauri::command]
+fn sync_project_categories(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let project_path = data
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "项目不存在".to_string())?
+        .path
+        .clone();
+    let path = Path::new(&project_path);
+    if !path.exists() {
+        return Ok(data);
+    }
+    let mut scanned: Vec<String> = vec![];
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 跳过隐藏目录(.git/.DS_Store 等)
+            if !name.starts_with('.') {
+                scanned.push(name);
+            }
+        }
+    }
+    scanned.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let project = data
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .unwrap();
+    if project.categories != scanned {
+        project.categories = scanned;
+        project.updated_at = utils::now_rfc3339();
+        write_data(&app, &data)?;
+    }
+    Ok(data)
+}
+
+/// 在项目根下创建一级分类目录(物理 mkdir),返回 sync 后的 AppData。
+#[tauri::command]
+fn create_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    name: String,
+) -> Result<AppData, String> {
+    let project_path = {
+        let data = read_data(&app)?;
+        data.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?
+            .path
+            .clone()
+    };
+    let dir = Path::new(&project_path).join(&name);
+    if dir.exists() {
+        return Err("分类已存在".to_string());
+    }
+    fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    sync_project_categories(app, project_id)
+}
+
+/// 重命名分类目录(物理 rename),返回 sync 后的 AppData。
+#[tauri::command]
+fn rename_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    old_name: String,
+    new_name: String,
+) -> Result<AppData, String> {
+    let project_path = {
+        let data = read_data(&app)?;
+        data.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?
+            .path
+            .clone()
+    };
+    let from = Path::new(&project_path).join(&old_name);
+    let to = Path::new(&project_path).join(&new_name);
+    if !from.exists() {
+        return Err("源分类目录不存在".to_string());
+    }
+    if to.exists() {
+        return Err("目标分类目录已存在".to_string());
+    }
+    fs::rename(&from, &to).map_err(|e| e.to_string())?;
+    sync_project_categories(app, project_id)
+}
+
+/// 删除分类目录(整目录移到回收站,可在回收站恢复)。返回 sync 后的 AppData。
+#[tauri::command]
+fn delete_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    category: String,
+) -> Result<AppData, String> {
+    let (project_path, project_name) = {
+        let data = read_data(&app)?;
+        let p = data
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?;
+        (p.path.clone(), p.name.clone())
+    };
+    let dir = Path::new(&project_path).join(&category);
+    if dir.exists() {
+        let trashed = store::move_file_into_trash(
+            &app,
+            &dir,
+            Some(project_id.clone()),
+            Some(project_name),
+            Some(category.clone()),
+        )?;
+        let mut trash = store::read_trash(&app)?;
+        trash.files.push(trashed);
+        store::write_trash(&app, &trash)?;
+    }
+    sync_project_categories(app, project_id)
 }
 
 /// 自定义便签附件存放路径。传入 None 或空字符串 = 恢复默认 `{workspaceRoot}/notes/assets`。
@@ -1451,6 +1605,8 @@ fn restore_project(app: tauri::AppHandle, trash_item_id: String) -> Result<AppDa
         updated_at: ts.clone(),
         last_opened_at: None,
         recent_files: vec![],
+        // 恢复时用当前全局分类作为初始;之后该项目独立。
+        categories: data.settings.categories.clone(),
     };
 
     data.projects.push(project);
@@ -1716,6 +1872,11 @@ fn main() {
             check_root_files,
             migrate_root,
             update_categories,
+            update_project_categories,
+            sync_project_categories,
+            create_project_category,
+            rename_project_category,
+            delete_project_category,
             set_note_assets_path,
             get_note_assets_dir,
             repair_project_paths,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -22,7 +22,8 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
@@ -36,7 +37,6 @@ import { setupDragDrop } from "../../utils";
 import { getFileIcon } from "../../utils/fileIcon";
 import type { AppData, CategoryFile, Language, Project } from "../../types";
 import { ConfirmDangerDialog, RenameFileDialog } from "../../dialogs";
-import { EmptyState } from "../../components";
 import { storage } from "../../utils";
 
 type SortMode = "name" | "time" | "size";
@@ -61,6 +61,7 @@ interface Messages {
   modifiedAt: string;
   size: string;
   rootFiles: string;
+  rootDropHint: string;
   emptyCategory: string;
   noMatch: string;
   emptyCategoryBody: string;
@@ -103,8 +104,15 @@ export function ProjectsView({
   initialCategory,
   highlightFile,
 }: ProjectsViewProps) {
+  // 始终从 data.projects 中取最新的项目快照,避免父组件 activeProject 引用
+  // 滞后于 setData 后的新 categories。
+  const currentProject = useMemo(
+    () => data.projects.find((p) => p.id === activeProject.id) ?? activeProject,
+    [data.projects, activeProject],
+  );
+  const projectCategories = currentProject.categories;
   const [selectedCategory, setSelectedCategory] = useState(
-    initialCategory?.category || data.settings.categories[0] || ""
+    initialCategory?.category || projectCategories[0] || ""
   );
   const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
   const [fileFilter, setFileFilter] = useState("");
@@ -147,9 +155,18 @@ export function ProjectsView({
   const categoryHoverTimerRef = useRef<number | undefined>(undefined);
   // 当前正在拖动的文件(dnd-kit DragOverlay 用)
   const [activeDragFile, setActiveDragFile] = useState<CategoryFile | null>(null);
+  // 同步 ref:spring-loaded 切换分类时原 FileRow 会被卸载,event.active.data 跟着失效,
+  // 必须用 ref 保住 dragStart 时的 file 引用,dragEnd 才能拿到。
+  const activeDragFileRef = useRef<CategoryFile | null>(null);
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+  // 拖拽碰撞检测:优先指针所在 droppable(嵌套/大小不一时更准),
+  // 间隙处 fallback 到矩形相交,避免 over=null 时拖不到目标。
+  const dndCollision = useCallback((args: Parameters<typeof pointerWithin>[0]) => {
+    const hits = pointerWithin(args);
+    return hits.length > 0 ? hits : rectIntersection(args);
+  }, []);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -188,19 +205,43 @@ export function ProjectsView({
   }, []);
 
   // 项目切换时：重置分类选择（用 categoriesKey 避免引用变化导致误触发）
-  const categoriesKey = data.settings.categories.join(",");
+  const categoriesKey = projectCategories.join(",");
+  // 进入项目:重置分类选择/过滤/展开。只在切换项目时跑,避免分类列表变化时丢 UI 状态。
   useEffect(() => {
-    setSelectedCategory(data.settings.categories[0] || "");
+    setSelectedCategory(projectCategories[0] || "");
     setFileFilter("");
     setExpandedFolders(new Set());
-    if (activeProject?.path) {
-      api
-        .getCategoryCounts(activeProject.path, data.settings.categories)
-        .then(setCategoryCounts)
-        .catch(() => setCategoryCounts({}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject.id]);
+
+  // 分类列表或外部文件变化时,刷新计数;若 selectedCategory 在新列表中不存在,切到第一个。
+  useEffect(() => {
+    if (!activeProject?.path) return;
+    api
+      .getCategoryCounts(activeProject.path, projectCategories)
+      .then(setCategoryCounts)
+      .catch(() => setCategoryCounts({}));
+    if (selectedCategory && !projectCategories.includes(selectedCategory)) {
+      setSelectedCategory(projectCategories[0] || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProject.id, categoriesKey]);
+  }, [activeProject?.path, categoriesKey, fileChangeEpoch]);
+
+  // 进项目时 + 文件监视器触发时,主动从磁盘扫一级目录,把外部增删/重命名同步到 categories。
+  useEffect(() => {
+    if (!activeProject?.id) return;
+    let cancelled = false;
+    api
+      .syncProjectCategories(activeProject.id)
+      .then((next) => {
+        if (!cancelled) setData(next);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject?.id, fileChangeEpoch]);
 
   // 搜索导航：initialCategory 变化时切换到指定分类（ts 确保每次搜索都触发）
   useEffect(() => {
@@ -247,15 +288,8 @@ export function ProjectsView({
     };
   }, [highlightFile]);
 
-  // 文件变更时：仅刷新分类计数，不重置选中分类
-  useEffect(() => {
-    if (activeProject?.path) {
-      api
-        .getCategoryCounts(activeProject.path, data.settings.categories)
-        .then(setCategoryCounts)
-        .catch(() => setCategoryCounts({}));
-    }
-  }, [activeProject?.path, categoriesKey, fileChangeEpoch]);
+  // (旧 effect 已合并到上方 categoriesKey/fileChangeEpoch effect,删除以避免双调 counts)
+
 
   useEffect(() => {
     storage.set("archive.fileScale", fileScale);
@@ -280,13 +314,13 @@ export function ProjectsView({
         .listCategoryFiles(activeProject.path, selectedCategory)
         .then(setCategoryFiles);
       api
-        .getCategoryCounts(activeProject.path, data.settings.categories)
+        .getCategoryCounts(activeProject.path, projectCategories)
         .then(setCategoryCounts)
         .catch(() => {});
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [activeProject, selectedCategory, data.settings.categories]);
+  }, [activeProject, selectedCategory, projectCategories]);
 
   // ── Data ─────────────────────────────────────────────────
 
@@ -296,7 +330,7 @@ export function ProjectsView({
       await api.listCategoryFiles(activeProject.path, selectedCategory)
     );
     api
-      .getCategoryCounts(activeProject.path, data.settings.categories)
+      .getCategoryCounts(activeProject.path, projectCategories)
       .then(setCategoryCounts)
       .catch(() => {});
   }
@@ -373,33 +407,41 @@ export function ProjectsView({
   }
 
   /** 新增分类:加到全局 categories 末尾,所有项目可见。物理目录在进入分类时按需创建。 */
+  /** 新增分类:物理 mkdir + sync(磁盘是真理源)。 */
   async function addCategory() {
     const name = newCategoryName.trim();
     if (!name) {
       setAddingCategory(false);
       return;
     }
-    const existing = data.settings.categories;
-    if (existing.includes(name)) {
+    if (projectCategories.includes(name)) {
       setAddingCategory(false);
       setNewCategoryName("");
       setSelectedCategory(name);
       return;
     }
-    const updated = await api.updateCategories([...existing, name]);
-    setData(updated);
+    try {
+      const updated = await api.createProjectCategory(activeProject.id, name);
+      setData(updated);
+      setSelectedCategory(name);
+    } catch (err) {
+      window.alert(String(err));
+    }
     setAddingCategory(false);
     setNewCategoryName("");
-    setSelectedCategory(name);
   }
 
-  /** 删除分类:只从全局 categories 移除,磁盘文件夹和文件保留(避免误删用户数据)。 */
+  /** 删除分类:物理目录整体移到回收站,可在回收站恢复。 */
   async function deleteCategory(name: string) {
-    const next = data.settings.categories.filter((c) => c !== name);
-    const updated = await api.updateCategories(next);
-    setData(updated);
-    if (selectedCategory === name) {
-      setSelectedCategory(updated.settings.categories[0] || "");
+    try {
+      const updated = await api.deleteProjectCategory(activeProject.id, name);
+      setData(updated);
+      if (selectedCategory === name) {
+        const nextProject = updated.projects.find((p) => p.id === activeProject.id);
+        setSelectedCategory(nextProject?.categories[0] || "");
+      }
+    } catch (err) {
+      window.alert(String(err));
     }
     setConfirmDeleteCategory(null);
   }
@@ -414,8 +456,7 @@ export function ProjectsView({
     setRenameCategoryName("");
   }
 
-  /** 重命名分类:同名(忽略大小写)报错,空名/未变化静默取消。
-   *  只改全局列表;磁盘上的旧物理目录保留,避免误删用户文件。 */
+  /** 重命名分类:物理 rename + sync。 */
   async function submitRenameCategory() {
     const oldName = renamingCategory;
     if (!oldName) return;
@@ -424,18 +465,25 @@ export function ProjectsView({
       cancelRenameCategory();
       return;
     }
-    const exists = data.settings.categories.some(
+    const exists = projectCategories.some(
       (c) => c.toLowerCase() === newName.toLowerCase() && c !== oldName,
     );
     if (exists) {
       window.alert(t.renameCategoryDuplicate.replace("{name}", newName));
-      // 保留输入框让用户改
       return;
     }
-    const next = data.settings.categories.map((c) => (c === oldName ? newName : c));
-    const updated = await api.updateCategories(next);
-    setData(updated);
-    if (selectedCategory === oldName) setSelectedCategory(newName);
+    try {
+      const updated = await api.renameProjectCategory(
+        activeProject.id,
+        oldName,
+        newName,
+      );
+      setData(updated);
+      if (selectedCategory === oldName) setSelectedCategory(newName);
+    } catch (err) {
+      window.alert(String(err));
+      return;
+    }
     cancelRenameCategory();
   }
 
@@ -472,7 +520,10 @@ export function ProjectsView({
 
   function onDndDragStart(event: DragStartEvent) {
     const file = event.active.data.current?.file as CategoryFile | undefined;
-    if (file) setActiveDragFile(file);
+    if (file) {
+      activeDragFileRef.current = file;
+      setActiveDragFile(file);
+    }
   }
 
   function onDndDragOver(event: DragOverEvent) {
@@ -495,9 +546,13 @@ export function ProjectsView({
   }
 
   async function onDndDragEnd(event: DragEndEvent) {
-    const file = event.active.data.current?.file as CategoryFile | undefined;
+    // 优先用 ref(spring-loaded 卸载源 FileRow 后 event.active.data 会失效)
+    const file =
+      activeDragFileRef.current ??
+      (event.active.data.current?.file as CategoryFile | undefined);
     const overId = event.over?.id ? String(event.over.id) : null;
     setActiveDragFile(null);
+    activeDragFileRef.current = null;
     clearCategoryHoverTimer();
     setDragOverCategory(null);
     if (!file || !overId || !activeProject) return;
@@ -550,6 +605,7 @@ export function ProjectsView({
 
   function onDndDragCancel() {
     setActiveDragFile(null);
+    activeDragFileRef.current = null;
     clearCategoryHoverTimer();
     setDragOverCategory(null);
   }
@@ -695,7 +751,7 @@ export function ProjectsView({
   return (
     <DndContext
       sensors={dndSensors}
-      collisionDetection={closestCenter}
+      collisionDetection={dndCollision}
       onDragStart={onDndDragStart}
       onDragOver={onDndDragOver}
       onDragEnd={onDndDragEnd}
@@ -724,7 +780,7 @@ export function ProjectsView({
               </button>
             </div>
             <div className="category-list">
-              {data.settings.categories.map((category) => {
+              {projectCategories.map((category) => {
                 const isRenaming = renamingCategory === category;
                 return (
                   <CategoryDropTarget
@@ -947,10 +1003,9 @@ export function ProjectsView({
               {isDraggingFiles && <div className="drop-hint">{t.dragHint}</div>}
               {filteredFiles.length === 0 ? (
                 <RootDropTarget>
-                  <EmptyState
-                    title={categoryFiles.length === 0 ? t.emptyCategory : t.noMatch}
-                    body={categoryFiles.length === 0 ? t.emptyCategoryBody : t.noMatchBody}
-                  />
+                  <div className="root-drop-hint-inline">
+                    {categoryFiles.length === 0 ? t.rootDropHint : t.noMatch}
+                  </div>
                 </RootDropTarget>
               ) : (
                 <div
@@ -985,7 +1040,7 @@ export function ProjectsView({
                       </>
                     ) : (
                       <div className="root-drop-hint-inline">
-                        把文件拖到这里放入此分类根目录
+                        {t.rootDropHint}
                       </div>
                     )}
                   </RootDropTarget>
@@ -1439,7 +1494,7 @@ function FolderDropTarget({ folderPath, children }: FolderDropTargetProps) {
 
 // ── RootDropTarget 子组件 ─────────────────────────────────
 //
-// 当前分类的「根目录」drop target。包裹 EmptyState 或「根目录文件」区块。
+// 当前分类的「根目录」drop target。包裹「根目录文件」区块或空提示。
 // 与 FolderDropTarget 在 DOM 上互为兄弟,closestCenter collision 能正确路由:
 // - 拖到 folder section 上 → folder droppable 命中
 // - 拖到 root section 上(folder 之外) → root droppable 命中

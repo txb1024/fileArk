@@ -1620,8 +1620,15 @@ small,
 
 .file-drop-zone.dragging {
   border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 拖入时,只让根目录拖入提示块高亮(不再整片 file-drop-zone 染色) */
+.file-drop-zone.dragging .root-drop-hint-inline {
+  border: 1px dashed var(--accent);
   background: var(--accent-soft);
-  box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--accent-strong);
 }
 
 .drop-hint {

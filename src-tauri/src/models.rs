@@ -31,6 +31,10 @@ pub struct Project {
     pub last_opened_at: Option<String>,
     #[serde(rename = "recentFiles")]
     pub recent_files: Vec<RecentFile>,
+    /// 项目级分类列表(独立于其他项目)。老数据缺该字段时 serde 填空,
+    /// store::read_data 会补成 settings.categories 副本。
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

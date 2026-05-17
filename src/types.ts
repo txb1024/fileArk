@@ -17,6 +17,8 @@ export type Project = {
   updatedAt: string;
   lastOpenedAt: string | null;
   recentFiles: RecentFile[];
+  /** 项目级分类列表(独立于其他项目)。新建项目时复制 settings.categories 作为初始值。 */
+  categories: string[];
 };
 
 export type InboxItem = {
@@ -222,6 +224,7 @@ export type Messages = {
   noMatchBody: string;
   folder: string;
   rootFiles: string;
+  rootDropHint: string;
   folderNamePrompt: string;
   deleteFile: string;
   copyFile: string;
@@ -355,6 +358,20 @@ export type ArchiveApi = {
   getAutostartEnabled: () => Promise<boolean>;
   setAutostartEnabled: (enabled: boolean) => Promise<void>;
   updateCategories: (categories: string[]) => Promise<AppData>;
+  /** 项目级分类更新(独立于其他项目)。 */
+  updateProjectCategories: (projectId: string, categories: string[]) => Promise<AppData>;
+  /** 扫描项目根目录,把磁盘上的一级子目录同步到 project.categories。 */
+  syncProjectCategories: (projectId: string) => Promise<AppData>;
+  /** 在项目根创建分类目录(物理 mkdir),返回 sync 后的 AppData。 */
+  createProjectCategory: (projectId: string, name: string) => Promise<AppData>;
+  /** 重命名分类目录(物理 rename),返回 sync 后的 AppData。 */
+  renameProjectCategory: (
+    projectId: string,
+    oldName: string,
+    newName: string,
+  ) => Promise<AppData>;
+  /** 删除分类目录(整目录移到回收站),返回 sync 后的 AppData。 */
+  deleteProjectCategory: (projectId: string, category: string) => Promise<AppData>;
   /** 自定义便签附件目录。传 null 恢复默认 */
   setNoteAssetsPath: (path: string | null) => Promise<AppData>;
   /** 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在 */

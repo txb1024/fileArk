@@ -64,6 +64,16 @@ export const api: ArchiveApi = {
   setAutostartEnabled: (enabled) => invoke<void>("set_autostart_enabled", { enabled }),
   // 分类管理
   updateCategories: (categories) => invoke<AppData>("update_categories", { categories }),
+  updateProjectCategories: (projectId, categories) =>
+    invoke<AppData>("update_project_categories", { projectId, categories }),
+  syncProjectCategories: (projectId) =>
+    invoke<AppData>("sync_project_categories", { projectId }),
+  createProjectCategory: (projectId, name) =>
+    invoke<AppData>("create_project_category", { projectId, name }),
+  renameProjectCategory: (projectId, oldName, newName) =>
+    invoke<AppData>("rename_project_category", { projectId, oldName, newName }),
+  deleteProjectCategory: (projectId, category) =>
+    invoke<AppData>("delete_project_category", { projectId, category }),
   setNoteAssetsPath: (path) => invoke<AppData>("set_note_assets_path", { path }),
   getNoteAssetsDir: () => invoke<string>("get_note_assets_dir"),
   repairProjectPaths: () => invoke<[number, AppData]>("repair_project_paths"),
