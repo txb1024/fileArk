@@ -143,13 +143,15 @@ const labels = {
 
 interface NotesViewProps {
   language: Language;
-  /** 外部跳转(如 Spotlight 搜索)选中的便签;每次 ts 变化都触发一次 selectNote + 展开父目录 */
-  initialNote?: { id: string; ts: number } | null;
+  /** 当前 nav 历史指定的便签 id(null=未指定)。变化时自动 selectNote + 展开父目录。 */
+  currentNoteId?: string | null;
+  /** 本地切换便签时通知 App 加 history;replace=true 时仅替换当前 entry。 */
+  onNoteChange?: (id: string, replace?: boolean) => void;
 }
 
 const EXPAND_KEY = "fileark.notes.expanded";
 
-export function NotesView({ language, initialNote }: NotesViewProps) {
+export function NotesView({ language, currentNoteId, onNoteChange }: NotesViewProps) {
   const t = labels[language];
   const [tree, setTree] = useState<NoteTreeNode[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -314,16 +316,25 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
     });
   }, []);
 
-  // 外部跳转(Spotlight 搜索)：每次 ts 变化都把该便签选中 + 展开父目录链
+  // 导航历史 ↔ 本地选中态双向同步:
+  // - currentNoteId 变化(back/forward 或 Spotlight 跳转) → selectNote + 展开父目录
+  // - 本地 activeId 切换 → 通知 App 加 history;首次同步用 replace 合并默认值
   useEffect(() => {
-    if (!initialNote) return;
-    const slash = initialNote.id.lastIndexOf("/");
-    const parent = slash > 0 ? initialNote.id.substring(0, slash) : "";
+    if (!currentNoteId) return;
+    const slash = currentNoteId.lastIndexOf("/");
+    const parent = slash > 0 ? currentNoteId.substring(0, slash) : "";
     if (parent) expandParents(parent);
-    selectNote(initialNote.id);
-    // initialNote.ts 作为「重新触发」的标记 — id 相同但 ts 变了也会再次执行
+    selectNote(currentNoteId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialNote?.ts, initialNote?.id]);
+  }, [currentNoteId]);
+  const firstNotePushRef = useRef(true);
+  useEffect(() => {
+    if (!onNoteChange || !activeId) return;
+    if (activeId === currentNoteId) return;
+    onNoteChange(activeId, firstNotePushRef.current);
+    firstNotePushRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // 快速创建便签：直接走后端默认名「未命名便签」，不弹窗，立刻选中
   const quickCreateNote = useCallback(

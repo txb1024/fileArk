@@ -1123,41 +1123,68 @@ fn search_project_files(app: tauri::AppHandle, query: String) -> Result<Vec<Sear
     }
 
     let mut results: Vec<SearchFileResult> = Vec::new();
-    let max_results = 20;
+    let max_results = 30;
+    let max_depth = 4; // 分类目录下最多递归 4 层(够覆盖大多数项目结构,不会无限)
 
-    for project in &data.projects {
+    'outer: for project in &data.projects {
         let project_path = Path::new(&project.path);
         if !project_path.exists() {
             continue;
         }
-        for category in &data.settings.categories {
+        // 用 project.categories(项目级独立),空时回退扫一级目录
+        let categories: Vec<String> = if project.categories.is_empty() {
+            fs::read_dir(project_path)
+                .ok()
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                        .filter_map(|e| {
+                            let n = e.file_name().to_string_lossy().to_string();
+                            if n.starts_with('.') { None } else { Some(n) }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            project.categories.clone()
+        };
+        for category in &categories {
             let cat_path = project_path.join(category);
             if !cat_path.exists() || !cat_path.is_dir() {
                 continue;
             }
-            let entries = match fs::read_dir(&cat_path) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.to_lowercase().contains(&lower) {
-                    continue;
-                }
-                let path = entry.path();
-                let ft = entry.file_type().ok();
-                let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
-                let metadata = entry.metadata().ok();
-                results.push(SearchFileResult {
-                    name,
-                    path: path.to_string_lossy().to_string(),
-                    project_name: project.name.clone(),
-                    category: category.clone(),
-                    size: metadata.map(|m| m.len() as i64).unwrap_or(0),
-                    is_directory: is_dir,
-                });
-                if results.len() >= max_results {
-                    return Ok(results);
+            // 用栈做 DFS,递归扫子目录,文件名/文件夹名命中即加结果
+            let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(cat_path, 0)];
+            while let Some((dir, depth)) = stack.pop() {
+                let entries = match fs::read_dir(&dir) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    let path = entry.path();
+                    let ft = entry.file_type().ok();
+                    let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+                    if name.to_lowercase().contains(&lower) {
+                        let metadata = entry.metadata().ok();
+                        results.push(SearchFileResult {
+                            name: name.clone(),
+                            path: path.to_string_lossy().to_string(),
+                            project_name: project.name.clone(),
+                            category: category.clone(),
+                            size: metadata.map(|m| m.len() as i64).unwrap_or(0),
+                            is_directory: is_dir,
+                        });
+                        if results.len() >= max_results {
+                            break 'outer;
+                        }
+                    }
+                    if is_dir && depth < max_depth {
+                        stack.push((path, depth + 1));
+                    }
                 }
             }
         }
@@ -1423,8 +1450,11 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
     if lower.is_empty() {
         return Ok(index.meta.values().cloned().collect());
     }
+    // 限制结果数,防止便签量大时把 N 个文件全 read 一遍
+    let max_results = 30;
     let mut results: Vec<NoteMeta> = vec![];
-    for (id, note) in index.meta.iter() {
+    // 第一遍:只查 meta(零 IO,极快)。命中 max_results 直接返回。
+    for note in index.meta.values() {
         let meta_match = note.title.to_lowercase().contains(&lower)
             || note.name.to_lowercase().contains(&lower)
             || note.parent.to_lowercase().contains(&lower)
@@ -1432,6 +1462,17 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
             || note.snippet.to_lowercase().contains(&lower);
         if meta_match {
             results.push(note.clone());
+            if results.len() >= max_results {
+                results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                return Ok(results);
+            }
+        }
+    }
+    // 第二遍:meta 没命中的便签才 read 正文(慢路径)。
+    let already: std::collections::HashSet<String> =
+        results.iter().map(|r| r.id.clone()).collect();
+    for (id, note) in index.meta.iter() {
+        if already.contains(id) {
             continue;
         }
         if let Ok(content) = read_note_content(&app, id) {
@@ -1442,6 +1483,9 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
             };
             if haystack.contains(&lower) {
                 results.push(note.clone());
+                if results.len() >= max_results {
+                    break;
+                }
             }
         }
     }

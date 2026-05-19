@@ -403,8 +403,74 @@ export function App() {
   // - 且当前没有任何项目(老用户已有项目就别打扰)
   // - 且 workspaceRoot 看起来是默认值(包含 Documents 或 \\个人项目资料库 这种)
   const [showBootstrap, setShowBootstrap] = useState(false);
-  const [view, setView] = useState<View>("home");
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // 导航历史:支持前进/后退(浏览器风格)。current = history[index]。
+  // entry 维度: view + projectId + category(项目内分类) + noteId(便签)。
+  // 同位置不 push;replace 模式只更新当前 entry 不增加历史(用于"默认值修正")。
+  type NavEntry = {
+    view: View;
+    projectId: string | null;
+    category?: string;
+    noteId?: string;
+  };
+  const [nav, setNav] = useState<{ history: NavEntry[]; index: number }>({
+    history: [{ view: "home", projectId: null }],
+    index: 0,
+  });
+  const current = nav.history[nav.index] ?? { view: "home" as View, projectId: null };
+  const view = current.view;
+  const activeProjectId = current.projectId;
+  const currentCategory = current.category ?? null;
+  const currentNoteId = current.noteId ?? null;
+  const navigate = useCallback(
+    (
+      nextView: View,
+      nextProjectId: string | null = null,
+      extra: { category?: string; noteId?: string; replace?: boolean } = {},
+    ) => {
+      const { category, noteId, replace = false } = extra;
+      setNav((prev) => {
+        const cur = prev.history[prev.index];
+        if (
+          cur &&
+          cur.view === nextView &&
+          cur.projectId === nextProjectId &&
+          cur.category === category &&
+          cur.noteId === noteId
+        ) {
+          return prev; // 完全同位置不重复 push
+        }
+        // replace 模式:只在 view+pid 相同时合并到当前 entry,不增加历史
+        if (
+          replace &&
+          cur &&
+          cur.view === nextView &&
+          cur.projectId === nextProjectId
+        ) {
+          const merged = [...prev.history];
+          merged[prev.index] = { view: nextView, projectId: nextProjectId, category, noteId };
+          return { ...prev, history: merged };
+        }
+        const newHistory = prev.history
+          .slice(0, prev.index + 1)
+          .concat({ view: nextView, projectId: nextProjectId, category, noteId });
+        return { history: newHistory, index: newHistory.length - 1 };
+      });
+    },
+    [],
+  );
+  const goBack = useCallback(
+    () => setNav((prev) => (prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev)),
+    [],
+  );
+  const goForward = useCallback(
+    () =>
+      setNav((prev) =>
+        prev.index < prev.history.length - 1 ? { ...prev, index: prev.index + 1 } : prev,
+      ),
+    [],
+  );
+  const canGoBack = nav.index > 0;
+  const canGoForward = nav.index < nav.history.length - 1;
   const [language, setLanguage] = useState<Language>(() =>
     storage.get("archive.language", "zh" as Language)
   );
@@ -436,11 +502,12 @@ export function App() {
     project: Project;
   } | null>(null);
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
-  const [navigatedCategory, setNavigatedCategory] = useState<{ category: string; ts: number } | null>(null);
+  // 旧 navigatedCategory state 已被 NavEntry.category 取代
+
   /** Spotlight 搜索选中文件:跳转到该文件所在分类并在列表里闪烁高亮该行 */
   const [highlightFile, setHighlightFile] = useState<{ path: string; ts: number } | null>(null);
   /** Spotlight 搜索选中便签后,带 id 跳到便签视图;NotesView 监听 ts 触发选中 + 展开父目录 */
-  const [pendingNote, setPendingNote] = useState<{ id: string; ts: number } | null>(null);
+  // pendingNote 已被 NavEntry.noteId 取代;NotesView 通过 currentNoteId 同步选中态
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
   const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(
@@ -543,21 +610,63 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [spotlightOpen]);
 
+  // 导航前进/后退:鼠标侧键(X1/X2) + Alt+方向键。输入框内不拦截方向键。
+  useEffect(() => {
+    function isEditingElement(el: EventTarget | null): boolean {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || node.isContentEditable;
+    }
+    function onMouseUp(e: MouseEvent) {
+      if (e.button === 3) {
+        e.preventDefault();
+        goBack();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        goForward();
+      }
+    }
+    function onMouseDown(e: MouseEvent) {
+      // 阻止 webview 自带的侧键导航默认行为(否则光抬起监听不到)
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (!e.altKey || isEditingElement(e.target)) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goBack();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goForward();
+      }
+    }
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [goBack, goForward]);
+
   // 業務方法
-  const openProject = useCallback(async (project: Project) => {
-    setNavigatedCategory(null);
-    setActiveProjectId(project.id);
-    setView("projects");
-    setData(await api.markProjectOpened(project.id));
-  }, []);
+  const openProject = useCallback(
+    async (project: Project) => {
+      navigate("projects", project.id);
+      setData(await api.markProjectOpened(project.id));
+    },
+    [navigate],
+  );
 
   const addInboxFiles = useCallback(async () => {
     const files = await api.selectFiles();
     if (files.length > 0) {
       setData(await api.addInboxFiles(files));
-      setView("inbox");
+      navigate("inbox");
     }
-  }, []);
+  }, [navigate]);
 
   const organizeInbox = useCallback(
     async (projectId: string, category: string, itemIds = selectedInbox) => {
@@ -571,11 +680,10 @@ export function App() {
   const handleSwitchWorkspace = useCallback(async (workspaceId: string) => {
     setData(await api.switchWorkspace(workspaceId));
     setRegistry(await api.listWorkspaces());
-    setView("home");
-    setActiveProjectId(null);
+    navigate("home");
     setWsDropdownOpen(false);
     setSidebarOpen(false);
-  }, []);
+  }, [navigate]);
 
   // 关闭工作空间弹窗时统一清理"新建"输入状态
   const closeWsDropdown = useCallback(() => {
@@ -613,12 +721,11 @@ export function App() {
     const newRegistry = await api.createWorkspace(wsNewName.trim());
     setRegistry(newRegistry);
     setData(await api.getData());
-    setView("settings");
-    setActiveProjectId(null);
+    navigate("settings");
     setWsDropdownOpen(false);
     setWsCreating(false);
     setWsNewName("");
-  }, [wsNewName]);
+  }, [wsNewName, navigate]);
 
   const handleRenameConfirm = useCallback(async (workspaceId: string, newName: string) => {
     setRegistry(await api.renameWorkspace(workspaceId, newName.trim()));
@@ -661,8 +768,7 @@ export function App() {
         const next = await api.deleteProject(projectId);
         setData(next);
         if (activeProjectId === projectId) {
-          setActiveProjectId(null);
-          setView("home");
+          navigate("home");
         }
         setDialog({ type: "none" });
       } catch (err) {
@@ -670,7 +776,7 @@ export function App() {
         window.alert(`删除失败：${msg}`);
       }
     },
-    [activeProjectId]
+    [activeProjectId, navigate]
   );
 
   const handleMigrateRoot = useCallback(
@@ -827,7 +933,7 @@ export function App() {
                     return;
                   }
                 }
-                setView(item.id);
+                navigate(item.id);
               }}
             >
               <item.icon size={18} />
@@ -950,7 +1056,7 @@ export function App() {
         {!hasRoot && (
           <div className="warning-banner">
             <span>{t.noRootWarning}</span>
-            <button className="warning-banner-btn" onClick={() => setView("settings")}>
+            <button className="warning-banner-btn" onClick={() => navigate("settings")}>
               {t.goToSettings}
             </button>
           </div>
@@ -964,9 +1070,29 @@ export function App() {
           >
             <Menu size={20} />
           </button>
+          <div className="topbar-nav-history">
+            <button
+              className="nav-history-btn"
+              onClick={goBack}
+              disabled={!canGoBack}
+              title="后退 (Alt+←)"
+              aria-label="后退"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <button
+              className="nav-history-btn"
+              onClick={goForward}
+              disabled={!canGoForward}
+              title="前进 (Alt+→)"
+              aria-label="前进"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
           {view === "projects" && activeProject ? (
             <div className="topbar-breadcrumb">
-              <button className="breadcrumb-btn" onClick={() => setView("home")}>
+              <button className="breadcrumb-btn" onClick={() => navigate("home")}>
                 <Home size={14} />
                 {t.home}
               </button>
@@ -1013,7 +1139,7 @@ export function App() {
             data={data}
             recentProjects={recentProjects}
             onOpenProject={openProject}
-            onNewProject={() => (hasRoot ? setNewProjectOpen(true) : setView("settings"))}
+            onNewProject={() => (hasRoot ? setNewProjectOpen(true) : navigate("settings"))}
             onImport={addInboxFiles}
             t={t}
           />
@@ -1030,7 +1156,10 @@ export function App() {
             onCopyFile={setCopiedFile}
             onPreviewFile={handlePreviewFile}
             fileChangeEpoch={fileChangeEpoch}
-            initialCategory={navigatedCategory}
+            currentCategory={currentCategory}
+            onCategoryChange={(next, replace) =>
+              navigate("projects", activeProject.id, { category: next, replace })
+            }
             highlightFile={highlightFile}
           />
         )}
@@ -1085,7 +1214,15 @@ export function App() {
           />
         )}
 
-        {view === "notes" && <NotesView language={language} initialNote={pendingNote} />}
+        {view === "notes" && (
+          <NotesView
+            language={language}
+            currentNoteId={currentNoteId}
+            onNoteChange={(id, replace) =>
+              navigate("notes", null, { noteId: id, replace })
+            }
+          />
+        )}
       </main>
 
       {/* 彈窗 */}
@@ -1096,7 +1233,9 @@ export function App() {
           onCreated={(next) => {
             setData(next);
             setNewProjectOpen(false);
-            setView("projects");
+            // 新建项目刚被 insert 到位置 0,跳到该项目;若取不到则回首页
+            const newId = next.projects[0]?.id ?? null;
+            navigate(newId ? "projects" : "home", newId);
           }}
           onSubmit={api.createProject}
         />
@@ -1205,29 +1344,24 @@ export function App() {
         data={data}
         onOpenProject={openProject}
         onSelectInbox={(itemId) => {
-          setView("inbox");
+          navigate("inbox");
           setSelectedInbox([itemId]);
         }}
         onNavigateToFolder={(projectName, category) => {
           const project = data.projects.find((p) => p.name === projectName);
           if (project) {
-            setNavigatedCategory(category ? { category, ts: Date.now() } : null);
-            setActiveProjectId(project.id);
-            setView("projects");
+            navigate("projects", project.id, { category });
           }
         }}
         onPreviewFile={handlePreviewFile}
         onNavigateToFile={(projectName, category, filePath) => {
           const project = data.projects.find((p) => p.name === projectName);
           if (!project) return;
-          setNavigatedCategory(category ? { category, ts: Date.now() } : null);
-          setActiveProjectId(project.id);
-          setView("projects");
+          navigate("projects", project.id, { category });
           setHighlightFile({ path: filePath, ts: Date.now() });
         }}
         onSelectNote={(noteId) => {
-          setView("notes");
-          setPendingNote({ id: noteId, ts: Date.now() });
+          navigate("notes", null, { noteId });
         }}
       />
 

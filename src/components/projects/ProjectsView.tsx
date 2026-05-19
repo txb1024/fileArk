@@ -86,8 +86,11 @@ interface ProjectsViewProps {
   onCopyFile: (file: { path: string; name: string } | null) => void;
   onPreviewFile: (path: string, name: string) => void;
   fileChangeEpoch: number;
-  initialCategory?: { category: string; ts: number } | null;
-  /** Spotlight 跳转到指定文件:滚动到该行 + 闪烁高亮(配合 initialCategory 一起改) */
+  /** 来自 App 导航历史的当前分类(null 表示未指定,组件自行选第一个)。 */
+  currentCategory?: string | null;
+  /** 用户切换分类时通知 App 加 history;replace=true 时仅替换当前 entry(用于默认值)。 */
+  onCategoryChange?: (next: string, replace?: boolean) => void;
+  /** Spotlight 跳转到指定文件:滚动到该行 + 闪烁高亮。 */
   highlightFile?: { path: string; ts: number } | null;
 }
 
@@ -101,7 +104,8 @@ export function ProjectsView({
   onCopyFile,
   onPreviewFile,
   fileChangeEpoch,
-  initialCategory,
+  currentCategory,
+  onCategoryChange,
   highlightFile,
 }: ProjectsViewProps) {
   // 始终从 data.projects 中取最新的项目快照,避免父组件 activeProject 引用
@@ -112,7 +116,7 @@ export function ProjectsView({
   );
   const projectCategories = currentProject.categories;
   const [selectedCategory, setSelectedCategory] = useState(
-    initialCategory?.category || projectCategories[0] || ""
+    currentCategory || projectCategories[0] || ""
   );
   const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
   const [fileFilter, setFileFilter] = useState("");
@@ -243,19 +247,51 @@ export function ProjectsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProject?.id, fileChangeEpoch]);
 
-  // 搜索导航：initialCategory 变化时切换到指定分类（ts 确保每次搜索都触发）
+  // 导航历史 ↔ 本地 selectedCategory 双向同步
+  // - props.currentCategory 变化(back/forward 或 Spotlight 跳转) → 同步到本地
+  // - 本地切换分类 → 通知 App 加 history;首次同步用 replace 模式合并默认值
+  const firstCategoryPush = useRef(true);
   useEffect(() => {
-    if (initialCategory?.category) {
-      setSelectedCategory(initialCategory.category);
+    if (currentCategory && currentCategory !== selectedCategory) {
+      setSelectedCategory(currentCategory);
     }
-  }, [initialCategory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCategory]);
+  useEffect(() => {
+    if (!onCategoryChange || !selectedCategory) return;
+    if (selectedCategory === currentCategory) return;
+    onCategoryChange(selectedCategory, firstCategoryPush.current);
+    firstCategoryPush.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCategory]);
 
   // Spotlight 跳转到指定文件:分类切换 + 文件列表刷新完成后,
   // 在 DOM 里按 data-file-path 找到对应行 -> 滚动到视野中央 -> 加 pulse 动画
   useEffect(() => {
     if (!highlightFile) return;
     const path = highlightFile.path;
-    // 文件列表是异步加载/重渲的,用 rAF + 短轮询等行节点出现(最多等 ~1s)
+    // 子目录里的文件先展开父目录链,否则 DOM 里没有 data-file-path 节点
+    const catRoot = `${activeProject.path}\\${selectedCategory}`;
+    const lowerPath = path.toLowerCase();
+    const lowerRoot = catRoot.toLowerCase();
+    if (lowerPath.startsWith(lowerRoot)) {
+      const rel = path.slice(catRoot.length).replace(/^[\\/]+/, "");
+      const parts = rel.split(/[\\/]/);
+      if (parts.length > 1) {
+        const parents: string[] = [];
+        let cur = catRoot;
+        for (let i = 0; i < parts.length - 1; i++) {
+          cur = `${cur}\\${parts[i]}`;
+          parents.push(cur);
+        }
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          parents.forEach((p) => next.add(p));
+          return next;
+        });
+      }
+    }
+    // 文件列表是异步加载/重渲的,用 rAF + 短轮询等行节点出现(最多等 ~1.5s)
     let cancelled = false;
     let attempts = 0;
     const escapeAttr = (s: string) => s.replace(/["\\]/g, "\\$&");
@@ -278,7 +314,8 @@ export function ProjectsView({
         return;
       }
       attempts += 1;
-      if (attempts < 30) window.setTimeout(tryLocate, 50);
+      // 等 expand 后子目录子项渲染,稍多给一些机会
+      if (attempts < 40) window.setTimeout(tryLocate, 50);
     };
     // 初次延迟一帧,等 setSelectedCategory 与文件列表 useEffect 都跑过
     const t0 = window.setTimeout(tryLocate, 60);

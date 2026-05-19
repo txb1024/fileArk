@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Search, FileText, Folder, Inbox, StickyNote, X } from "lucide-react";
+import Fuse from "fuse.js";
 import { api } from "../api";
 import type { AppData, Project } from "../types";
 
@@ -97,46 +98,58 @@ export function SpotlightSearch({
   const noteSearchTimerRef = useRef<number | undefined>(undefined);
   const [isClosing, setIsClosing] = useState(false);
 
-  // 项目 + 收件箱（同步匹配）
+  // 项目 + 收件箱(Fuse.js 模糊匹配:支持 typo、权重、忽略大小写)
+  const projectFuse = useMemo(
+    () =>
+      new Fuse(data.projects, {
+        keys: [
+          { name: "name", weight: 3 },
+          { name: "alias", weight: 2 },
+          { name: "tags", weight: 2 },
+          { name: "path", weight: 1 },
+        ],
+        threshold: 0.4,
+        ignoreLocation: true,
+        includeScore: false,
+      }),
+    [data.projects],
+  );
+  const inboxFuse = useMemo(
+    () =>
+      new Fuse(data.inbox, {
+        keys: ["name"],
+        threshold: 0.4,
+        ignoreLocation: true,
+      }),
+    [data.inbox],
+  );
+
   const localResults = useMemo<SearchResult[]>(() => {
     const trimmed = query.trim();
     if (!trimmed) return [];
 
-    const text = trimmed.toLowerCase();
     const items: SearchResult[] = [];
-
-    data.projects.forEach((project) => {
-      const nameMatch = project.name.toLowerCase().includes(text);
-      const aliasMatch = project.alias?.toLowerCase().includes(text);
-      const tagMatch = project.tags.some((t) => t.toLowerCase().includes(text));
-      const pathMatch = project.path.toLowerCase().includes(text);
-
-      if (nameMatch || aliasMatch || tagMatch || pathMatch) {
-        items.push({
-          type: "project",
-          id: project.id,
-          name: project.name,
-          path: project.path,
-          meta: project.alias || project.tags.join(", ") || undefined,
-        });
-      }
+    projectFuse.search(trimmed, { limit: 20 }).forEach(({ item: project }) => {
+      items.push({
+        type: "project",
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        meta: project.alias || project.tags.join(", ") || undefined,
+      });
     });
-
-    data.inbox.forEach((item) => {
-      if (item.name.toLowerCase().includes(text)) {
-        items.push({
-          type: "inbox",
-          id: item.id,
-          name: item.name,
-          path: item.sourcePath,
-        });
-      }
+    inboxFuse.search(trimmed, { limit: 20 }).forEach(({ item }) => {
+      items.push({
+        type: "inbox",
+        id: item.id,
+        name: item.name,
+        path: item.sourcePath,
+      });
     });
-
     return items;
-  }, [query, data]);
+  }, [query, projectFuse, inboxFuse]);
 
-  // 文件搜索（异步后端遍历项目目录，防抖 200ms）
+  // 文件搜索（异步后端遍历项目目录，防抖 200ms；abort flag 防止旧请求覆盖新请求）
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
@@ -144,9 +157,11 @@ export function SpotlightSearch({
       return;
     }
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    let cancelled = false;
     searchTimerRef.current = window.setTimeout(async () => {
       try {
         const backendFiles = await api.searchProjectFiles(trimmed);
+        if (cancelled) return;
         setFileResults(
           backendFiles.map((f) => ({
             type: "file" as const,
@@ -161,15 +176,16 @@ export function SpotlightSearch({
           }))
         );
       } catch {
-        setFileResults([]);
+        if (!cancelled) setFileResults([]);
       }
     }, 200);
     return () => {
+      cancelled = true;
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
   }, [query]);
 
-  // 便签搜索（后端 search_notes 同时匹配 title/tags/path/正文,防抖 200ms）
+  // 便签搜索（后端 search_notes 同时匹配 title/tags/path/正文,防抖 200ms;abort flag 同上）
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
@@ -177,25 +193,27 @@ export function SpotlightSearch({
       return;
     }
     if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
+    let cancelled = false;
     noteSearchTimerRef.current = window.setTimeout(async () => {
       try {
         const notes = await api.searchNotes(trimmed);
+        if (cancelled) return;
         setNoteResults(
           notes.map((n) => ({
             type: "note" as const,
             id: n.id,
             name: n.title || n.name,
             path: n.id,
-            // meta 显示父路径,优先 snippet(正文匹配片段)放到下方
             meta: n.parent || "便签",
             snippet: n.snippet || undefined,
           }))
         );
       } catch {
-        setNoteResults([]);
+        if (!cancelled) setNoteResults([]);
       }
     }, 200);
     return () => {
+      cancelled = true;
       if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
     };
   }, [query]);

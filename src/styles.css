@@ -2463,6 +2463,38 @@ input {
   color: var(--text);
 }
 
+/* 顶栏前进/后退按钮(浏览器风格导航) */
+.topbar-nav-history {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nav-history-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.nav-history-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.nav-history-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
