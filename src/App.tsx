@@ -10,7 +10,6 @@ import {
   FolderOpen,
   FolderPlus,
   Home,
-  Inbox,
   Menu,
   Pencil,
   Pin,
@@ -46,6 +45,7 @@ import {
   CategoryEditModal,
   PreviewModal,
   ConfirmDangerDialog,
+  BootstrapDialog,
 } from "./dialogs";
 import { storage } from "./utils";
 
@@ -93,6 +93,12 @@ const messages = {
     openCategoryFolder: "打开分类文件夹",
     addFiles: "加入文件",
     newFolder: "新建目录",
+    addCategory: "新建分类",
+    deleteCategory: "删除分类",
+    renameCategory: "重命名",
+    renameCategoryDuplicate: "已存在同名分类「{name}」,请换一个名字。",
+    addCategoryPlaceholder: "输入新分类名…",
+    deleteCategoryConfirm: "确定从全局分类列表中删除「{name}」？磁盘上的文件夹和文件不会被删除。",
     sortByName: "按名称",
     sortByTime: "按时间",
     sortBySize: "按大小",
@@ -106,6 +112,7 @@ const messages = {
     noMatchBody: "换一个文件名关键词再试。",
     folder: "目录",
     rootFiles: "分类根目录",
+    rootDropHint: "把文件拖到这里放入此分类根目录",
     folderNamePrompt: "请输入新目录名称",
     deleteFile: "删除",
     copyFile: "复制",
@@ -194,6 +201,19 @@ const messages = {
     workspaceRootDesc: "新建项目时，会在这个目录下生成项目文件夹。",
     workspaceRootNotSet: "未设置",
     changeRoot: "更换",
+    repairPaths: "修复项目路径",
+    repairPathsDesc: "若之前迁移过工作目录但项目卡片打不开,点这里按项目名在当前目录下重新定位。",
+    repairPathsResult: "已修复 {count} 个项目路径。",
+    repairPathsNone: "没有需要修复的项目。",
+    repairWorkspaces: "分离工作空间目录",
+    repairWorkspacesDesc: "把还共用默认根目录的工作空间自动改成 默认根/工作空间名 子目录,并把已有项目目录整体搬过去。",
+    repairWorkspacesResult: "已分离 {wsCount} 个工作空间,迁移 {fileCount} 个项目目录。",
+    repairWorkspacesNone: "没有需要分离的工作空间。",
+    noteAssets: "便签附件目录",
+    noteAssetsDesc: "便签中的图片、文件等附件保存位置。留空则使用默认 {workspaceRoot}/notes/assets。",
+    noteAssetsDefault: "默认（工作目录下 notes/assets）",
+    changeNoteAssets: "选择目录",
+    resetNoteAssets: "恢复默认",
     categoryManagement: "分类",
     editCategory: "编辑",
     database: "数据库",
@@ -224,6 +244,12 @@ const messages = {
     openCategoryFolder: "Open category folder",
     addFiles: "Add Files",
     newFolder: "New Folder",
+    addCategory: "New category",
+    deleteCategory: "Delete category",
+    renameCategory: "Rename",
+    renameCategoryDuplicate: "Category \"{name}\" already exists. Pick a different name.",
+    addCategoryPlaceholder: "Category name…",
+    deleteCategoryConfirm: "Remove \"{name}\" from the global category list? Files and folders on disk are kept.",
     sortByName: "Name",
     sortByTime: "Time",
     sortBySize: "Size",
@@ -237,6 +263,7 @@ const messages = {
     noMatchBody: "Try another file name keyword.",
     folder: "Folder",
     rootFiles: "Category Root",
+    rootDropHint: "Drop files here to add them to this category root",
     folderNamePrompt: "Enter a new folder name",
     deleteFile: "Delete",
     copyFile: "Copy",
@@ -329,6 +356,19 @@ const messages = {
     workspaceRootDesc: "New projects will create folders under this directory.",
     workspaceRootNotSet: "Not set",
     changeRoot: "Change",
+    repairPaths: "Repair project paths",
+    repairPathsDesc: "If projects fail to open after migrating workspace root, relocate them by name under the current root.",
+    repairPathsResult: "Repaired {count} project path(s).",
+    repairPathsNone: "No projects needed repair.",
+    repairWorkspaces: "Separate workspace folders",
+    repairWorkspacesDesc: "Move workspaces still sharing the default root into default-root/workspace-name subfolders, and physically move project folders too.",
+    repairWorkspacesResult: "Separated {wsCount} workspace(s), migrated {fileCount} project folder(s).",
+    repairWorkspacesNone: "No workspaces needed separation.",
+    noteAssets: "Note assets folder",
+    noteAssetsDesc: "Where images and files used in notes are stored. Leave blank for the default ({workspaceRoot}/notes/assets).",
+    noteAssetsDefault: "Default ({workspaceRoot}/notes/assets)",
+    changeNoteAssets: "Pick folder",
+    resetNoteAssets: "Reset",
     categoryManagement: "Categories",
     editCategory: "Edit",
     database: "Database",
@@ -357,8 +397,79 @@ export function App() {
   // 狀態
   const [data, setData] = useState<AppData>(emptyData);
   const [registry, setRegistry] = useState<WorkspaceRegistry | null>(null);
-  const [view, setView] = useState<View>("home");
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // 首次启动时是否展示「设置工作目录」引导。判断条件:
+  // - localStorage 没标记过(全新装 / 用户主动清过)
+  // - 且当前没有任何项目(老用户已有项目就别打扰)
+  // - 且 workspaceRoot 看起来是默认值(包含 Documents 或 \\个人项目资料库 这种)
+  const [showBootstrap, setShowBootstrap] = useState(false);
+  // 导航历史:支持前进/后退(浏览器风格)。current = history[index]。
+  // entry 维度: view + projectId + category(项目内分类) + noteId(便签)。
+  // 同位置不 push;replace 模式只更新当前 entry 不增加历史(用于"默认值修正")。
+  type NavEntry = {
+    view: View;
+    projectId: string | null;
+    category?: string;
+    noteId?: string;
+  };
+  const [nav, setNav] = useState<{ history: NavEntry[]; index: number }>({
+    history: [{ view: "home", projectId: null }],
+    index: 0,
+  });
+  const current = nav.history[nav.index] ?? { view: "home" as View, projectId: null };
+  const view = current.view;
+  const activeProjectId = current.projectId;
+  const currentCategory = current.category ?? null;
+  const currentNoteId = current.noteId ?? null;
+  const navigate = useCallback(
+    (
+      nextView: View,
+      nextProjectId: string | null = null,
+      extra: { category?: string; noteId?: string; replace?: boolean } = {},
+    ) => {
+      const { category, noteId, replace = false } = extra;
+      setNav((prev) => {
+        const cur = prev.history[prev.index];
+        if (
+          cur &&
+          cur.view === nextView &&
+          cur.projectId === nextProjectId &&
+          cur.category === category &&
+          cur.noteId === noteId
+        ) {
+          return prev; // 完全同位置不重复 push
+        }
+        // replace 模式:只在 view+pid 相同时合并到当前 entry,不增加历史
+        if (
+          replace &&
+          cur &&
+          cur.view === nextView &&
+          cur.projectId === nextProjectId
+        ) {
+          const merged = [...prev.history];
+          merged[prev.index] = { view: nextView, projectId: nextProjectId, category, noteId };
+          return { ...prev, history: merged };
+        }
+        const newHistory = prev.history
+          .slice(0, prev.index + 1)
+          .concat({ view: nextView, projectId: nextProjectId, category, noteId });
+        return { history: newHistory, index: newHistory.length - 1 };
+      });
+    },
+    [],
+  );
+  const goBack = useCallback(
+    () => setNav((prev) => (prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev)),
+    [],
+  );
+  const goForward = useCallback(
+    () =>
+      setNav((prev) =>
+        prev.index < prev.history.length - 1 ? { ...prev, index: prev.index + 1 } : prev,
+      ),
+    [],
+  );
+  const canGoBack = nav.index > 0;
+  const canGoForward = nav.index < nav.history.length - 1;
   const [language, setLanguage] = useState<Language>(() =>
     storage.get("archive.language", "zh" as Language)
   );
@@ -390,11 +501,12 @@ export function App() {
     project: Project;
   } | null>(null);
   const [selectedInbox, setSelectedInbox] = useState<string[]>([]);
-  const [navigatedCategory, setNavigatedCategory] = useState<{ category: string; ts: number } | null>(null);
+  // 旧 navigatedCategory state 已被 NavEntry.category 取代
+
   /** Spotlight 搜索选中文件:跳转到该文件所在分类并在列表里闪烁高亮该行 */
   const [highlightFile, setHighlightFile] = useState<{ path: string; ts: number } | null>(null);
   /** Spotlight 搜索选中便签后,带 id 跳到便签视图;NotesView 监听 ts 触发选中 + 展开父目录 */
-  const [pendingNote, setPendingNote] = useState<{ id: string; ts: number } | null>(null);
+  // pendingNote 已被 NavEntry.noteId 取代;NotesView 通过 currentNoteId 同步选中态
   // 分类管理
   const [categoryEditOpen, setCategoryEditOpen] = useState(false);
   const [categoryEditing, setCategoryEditing] = useState<{ index: number; name: string } | null>(
@@ -411,7 +523,13 @@ export function App() {
   // 初始化
   useEffect(() => {
     api.listWorkspaces().then(setRegistry);
-    api.getData().then(setData);
+    api.getData().then((d) => {
+      setData(d);
+      const seen = storage.get<boolean>("archive.bootstrapDone", false);
+      if (!seen && d.projects.length === 0) {
+        setShowBootstrap(true);
+      }
+    });
   }, []);
 
   // 系统窗口标题栏跟随 app 主题深浅切换(Windows 11 immersive dark mode / macOS native)
@@ -479,7 +597,7 @@ export function App() {
   // 快捷鍵
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setSpotlightOpen(true);
       }
@@ -491,21 +609,63 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [spotlightOpen]);
 
+  // 导航前进/后退:鼠标侧键(X1/X2) + Alt+方向键。输入框内不拦截方向键。
+  useEffect(() => {
+    function isEditingElement(el: EventTarget | null): boolean {
+      const node = el as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || node.isContentEditable;
+    }
+    function onMouseUp(e: MouseEvent) {
+      if (e.button === 3) {
+        e.preventDefault();
+        goBack();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        goForward();
+      }
+    }
+    function onMouseDown(e: MouseEvent) {
+      // 阻止 webview 自带的侧键导航默认行为(否则光抬起监听不到)
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (!e.altKey || isEditingElement(e.target)) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goBack();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goForward();
+      }
+    }
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [goBack, goForward]);
+
   // 業務方法
-  const openProject = useCallback(async (project: Project) => {
-    setNavigatedCategory(null);
-    setActiveProjectId(project.id);
-    setView("projects");
-    setData(await api.markProjectOpened(project.id));
-  }, []);
+  const openProject = useCallback(
+    async (project: Project) => {
+      navigate("projects", project.id);
+      setData(await api.markProjectOpened(project.id));
+    },
+    [navigate],
+  );
 
   const addInboxFiles = useCallback(async () => {
     const files = await api.selectFiles();
     if (files.length > 0) {
       setData(await api.addInboxFiles(files));
-      setView("inbox");
+      navigate("inbox");
     }
-  }, []);
+  }, [navigate]);
 
   const organizeInbox = useCallback(
     async (projectId: string, category: string, itemIds = selectedInbox) => {
@@ -519,11 +679,10 @@ export function App() {
   const handleSwitchWorkspace = useCallback(async (workspaceId: string) => {
     setData(await api.switchWorkspace(workspaceId));
     setRegistry(await api.listWorkspaces());
-    setView("home");
-    setActiveProjectId(null);
+    navigate("home");
     setWsDropdownOpen(false);
     setSidebarOpen(false);
-  }, []);
+  }, [navigate]);
 
   // 关闭工作空间弹窗时统一清理"新建"输入状态
   const closeWsDropdown = useCallback(() => {
@@ -561,12 +720,11 @@ export function App() {
     const newRegistry = await api.createWorkspace(wsNewName.trim());
     setRegistry(newRegistry);
     setData(await api.getData());
-    setView("settings");
-    setActiveProjectId(null);
+    navigate("settings");
     setWsDropdownOpen(false);
     setWsCreating(false);
     setWsNewName("");
-  }, [wsNewName]);
+  }, [wsNewName, navigate]);
 
   const handleRenameConfirm = useCallback(async (workspaceId: string, newName: string) => {
     setRegistry(await api.renameWorkspace(workspaceId, newName.trim()));
@@ -609,8 +767,7 @@ export function App() {
         const next = await api.deleteProject(projectId);
         setData(next);
         if (activeProjectId === projectId) {
-          setActiveProjectId(null);
-          setView("home");
+          navigate("home");
         }
         setDialog({ type: "none" });
       } catch (err) {
@@ -618,13 +775,18 @@ export function App() {
         window.alert(`删除失败：${msg}`);
       }
     },
-    [activeProjectId]
+    [activeProjectId, navigate]
   );
 
   const handleMigrateRoot = useCallback(
     async (oldRoot: string, newRoot: string, migrate: boolean) => {
-      setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
-      setDialog({ type: "none" });
+      try {
+        setData(await api.migrateRoot({ oldRoot, newRoot, migrate }));
+        setDialog({ type: "none" });
+      } catch (err) {
+        // 后端拒绝(如目标目录是源目录的子目录)走这里;弹原始错误文本让用户看清
+        window.alert(String(err));
+      }
     },
     []
   );
@@ -654,7 +816,7 @@ export function App() {
     }
     const updatedData = await api.updateCategories(newCategories);
     setData(updatedData);
-    setCategoryEditOpen(false);
+    // 不关闭 modal,让用户可以连续编辑/添加多个分类
     setCategoryEditing(null);
     setCategoryNewName("");
   }
@@ -750,7 +912,6 @@ export function App() {
           {[
             { id: "home" as const, label: t.home, icon: Home },
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
-            { id: "inbox" as const, label: t.inbox, icon: Inbox },
             { id: "notes" as const, label: language === "zh" ? "便签" : "Notes", icon: StickyNote },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
             { id: "settings" as const, label: t.settings, icon: Settings },
@@ -770,7 +931,7 @@ export function App() {
                     return;
                   }
                 }
-                setView(item.id);
+                navigate(item.id);
               }}
             >
               <item.icon size={18} />
@@ -893,7 +1054,7 @@ export function App() {
         {!hasRoot && (
           <div className="warning-banner">
             <span>{t.noRootWarning}</span>
-            <button className="warning-banner-btn" onClick={() => setView("settings")}>
+            <button className="warning-banner-btn" onClick={() => navigate("settings")}>
               {t.goToSettings}
             </button>
           </div>
@@ -907,9 +1068,29 @@ export function App() {
           >
             <Menu size={20} />
           </button>
+          <div className="topbar-nav-history">
+            <button
+              className="nav-history-btn"
+              onClick={goBack}
+              disabled={!canGoBack}
+              title="后退 (Alt+←)"
+              aria-label="后退"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <button
+              className="nav-history-btn"
+              onClick={goForward}
+              disabled={!canGoForward}
+              title="前进 (Alt+→)"
+              aria-label="前进"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
           {view === "projects" && activeProject ? (
             <div className="topbar-breadcrumb">
-              <button className="breadcrumb-btn" onClick={() => setView("home")}>
+              <button className="breadcrumb-btn" onClick={() => navigate("home")}>
                 <Home size={14} />
                 {t.home}
               </button>
@@ -956,7 +1137,7 @@ export function App() {
             data={data}
             recentProjects={recentProjects}
             onOpenProject={openProject}
-            onNewProject={() => (hasRoot ? setNewProjectOpen(true) : setView("settings"))}
+            onNewProject={() => (hasRoot ? setNewProjectOpen(true) : navigate("settings"))}
             onImport={addInboxFiles}
             t={t}
           />
@@ -973,7 +1154,10 @@ export function App() {
             onCopyFile={setCopiedFile}
             onPreviewFile={handlePreviewFile}
             fileChangeEpoch={fileChangeEpoch}
-            initialCategory={navigatedCategory}
+            currentCategory={currentCategory}
+            onCategoryChange={(next, replace) =>
+              navigate("projects", activeProject.id, { category: next, replace })
+            }
             highlightFile={highlightFile}
           />
         )}
@@ -1028,7 +1212,15 @@ export function App() {
           />
         )}
 
-        {view === "notes" && <NotesView language={language} initialNote={pendingNote} />}
+        {view === "notes" && (
+          <NotesView
+            language={language}
+            currentNoteId={currentNoteId}
+            onNoteChange={(id, replace) =>
+              navigate("notes", null, { noteId: id, replace })
+            }
+          />
+        )}
       </main>
 
       {/* 彈窗 */}
@@ -1039,7 +1231,9 @@ export function App() {
           onCreated={(next) => {
             setData(next);
             setNewProjectOpen(false);
-            setView("projects");
+            // 新建项目刚被 insert 到位置 0,跳到该项目;若取不到则回首页
+            const newId = next.projects[0]?.id ?? null;
+            navigate(newId ? "projects" : "home", newId);
           }}
           onSubmit={api.createProject}
         />
@@ -1077,6 +1271,30 @@ export function App() {
           cancelLabel="取消"
           onConfirm={() => handleProjectDeleteConfirm(dialog.projectId)}
           onClose={() => setDialog({ type: "none" })}
+        />
+      )}
+
+      {showBootstrap && (
+        <BootstrapDialog
+          defaultRoot={data.settings.workspaceRoot}
+          language={language}
+          onUseDefault={() => {
+            storage.set("archive.bootstrapDone", true);
+            setShowBootstrap(false);
+          }}
+          onPickCustom={async () => {
+            try {
+              const picked = await api.selectRoot();
+              if (picked) {
+                setData(await api.updateRoot(picked));
+              }
+            } catch (err) {
+              console.error("bootstrap selectRoot failed:", err);
+            } finally {
+              storage.set("archive.bootstrapDone", true);
+              setShowBootstrap(false);
+            }
+          }}
         />
       )}
 
@@ -1124,29 +1342,24 @@ export function App() {
         data={data}
         onOpenProject={openProject}
         onSelectInbox={(itemId) => {
-          setView("inbox");
+          navigate("inbox");
           setSelectedInbox([itemId]);
         }}
         onNavigateToFolder={(projectName, category) => {
           const project = data.projects.find((p) => p.name === projectName);
           if (project) {
-            setNavigatedCategory(category ? { category, ts: Date.now() } : null);
-            setActiveProjectId(project.id);
-            setView("projects");
+            navigate("projects", project.id, { category });
           }
         }}
         onPreviewFile={handlePreviewFile}
         onNavigateToFile={(projectName, category, filePath) => {
           const project = data.projects.find((p) => p.name === projectName);
           if (!project) return;
-          setNavigatedCategory(category ? { category, ts: Date.now() } : null);
-          setActiveProjectId(project.id);
-          setView("projects");
+          navigate("projects", project.id, { category });
           setHighlightFile({ path: filePath, ts: Date.now() });
         }}
         onSelectNote={(noteId) => {
-          setView("notes");
-          setPendingNote({ id: noteId, ts: Date.now() });
+          navigate("notes", null, { noteId });
         }}
       />
 

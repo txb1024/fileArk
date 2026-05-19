@@ -17,6 +17,7 @@ import {
   FileText,
   Pencil,
   ChevronLeft,
+  Download,
 } from "lucide-react";
 import { api } from "../api";
 import type { NoteMeta, NoteTreeNode, TrashedNote } from "../types";
@@ -28,6 +29,8 @@ import {
 } from "../components/notes/NoteTree";
 import { ContextMenu, type ContextMenuItem } from "../components/notes/ContextMenu";
 import { EditorErrorBoundary } from "../components/notes/EditorErrorBoundary";
+import { useActiveNoteEditor } from "../components/notes/activeNoteEditorStore";
+import { exportNoteAs, type ExportKind } from "../components/notes/noteExport";
 
 type Language = "zh" | "en";
 
@@ -77,6 +80,10 @@ const labels = {
     exitFocus: "退出专注模式 (Esc)",
     showOutline: "显示大纲",
     hideOutline: "隐藏大纲",
+    exportNote: "导出",
+    exportMarkdown: "导出为 Markdown",
+    exportHtml: "导出为 HTML",
+    exportPdf: "打印 / 另存 PDF",
     pinToolbar: "固定工具栏",
     unpinToolbar: "取消固定",
     rename: "重命名",
@@ -117,6 +124,10 @@ const labels = {
     exitFocus: "Exit focus mode (Esc)",
     showOutline: "Show outline",
     hideOutline: "Hide outline",
+    exportNote: "Export",
+    exportMarkdown: "Export as Markdown",
+    exportHtml: "Export as HTML",
+    exportPdf: "Print / Save PDF",
     pinToolbar: "Pin toolbar",
     unpinToolbar: "Unpin toolbar",
     rename: "Rename",
@@ -132,13 +143,15 @@ const labels = {
 
 interface NotesViewProps {
   language: Language;
-  /** 外部跳转(如 Spotlight 搜索)选中的便签;每次 ts 变化都触发一次 selectNote + 展开父目录 */
-  initialNote?: { id: string; ts: number } | null;
+  /** 当前 nav 历史指定的便签 id(null=未指定)。变化时自动 selectNote + 展开父目录。 */
+  currentNoteId?: string | null;
+  /** 本地切换便签时通知 App 加 history;replace=true 时仅替换当前 entry。 */
+  onNoteChange?: (id: string, replace?: boolean) => void;
 }
 
 const EXPAND_KEY = "fileark.notes.expanded";
 
-export function NotesView({ language, initialNote }: NotesViewProps) {
+export function NotesView({ language, currentNoteId, onNoteChange }: NotesViewProps) {
   const t = labels[language];
   const [tree, setTree] = useState<NoteTreeNode[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -183,6 +196,28 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
   const [confirmDelete, setConfirmDelete] = useState<NoteTreeNode | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [outlineVisible, setOutlineVisible] = useState(true);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+
+  const activeEditor = useActiveNoteEditor();
+
+  const handleExport = useCallback(
+    async (kind: ExportKind) => {
+      setExportMenuOpen(false);
+      if (!activeEditor || !activeMeta) return;
+      const base = (activeMeta.title || activeMeta.name || "note").replace(
+        /\.(bnote|md)$/i,
+        "",
+      );
+      try {
+        await exportNoteAs(activeEditor, base, kind);
+      } catch (err) {
+        console.error("[NotesView] export failed:", err);
+      }
+    },
+    // activeMeta 用 ref 不合适;它是 useMemo 派生,引用变化反映了 noteId 变化
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeEditor, activeMeta?.id],
+  );
 
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => {
     try {
@@ -281,16 +316,25 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
     });
   }, []);
 
-  // 外部跳转(Spotlight 搜索)：每次 ts 变化都把该便签选中 + 展开父目录链
+  // 导航历史 ↔ 本地选中态双向同步:
+  // - currentNoteId 变化(back/forward 或 Spotlight 跳转) → selectNote + 展开父目录
+  // - 本地 activeId 切换 → 通知 App 加 history;首次同步用 replace 合并默认值
   useEffect(() => {
-    if (!initialNote) return;
-    const slash = initialNote.id.lastIndexOf("/");
-    const parent = slash > 0 ? initialNote.id.substring(0, slash) : "";
+    if (!currentNoteId) return;
+    const slash = currentNoteId.lastIndexOf("/");
+    const parent = slash > 0 ? currentNoteId.substring(0, slash) : "";
     if (parent) expandParents(parent);
-    selectNote(initialNote.id);
-    // initialNote.ts 作为「重新触发」的标记 — id 相同但 ts 变了也会再次执行
+    selectNote(currentNoteId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialNote?.ts, initialNote?.id]);
+  }, [currentNoteId]);
+  const firstNotePushRef = useRef(true);
+  useEffect(() => {
+    if (!onNoteChange || !activeId) return;
+    if (activeId === currentNoteId) return;
+    onNoteChange(activeId, firstNotePushRef.current);
+    firstNotePushRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // 快速创建便签：直接走后端默认名「未命名便签」，不弹窗，立刻选中
   const quickCreateNote = useCallback(
@@ -751,11 +795,32 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
                 </div>
               </div>
               <div className="notes-editor-actions">
-                {lastSavedAt && (
-                  <span className="muted small">
-                    {t.lastSaved}: {lastSavedAt}
-                  </span>
-                )}
+                <div className="notes-export-wrap">
+                  <button
+                    className="notes-focus-toggle"
+                    onClick={() => setExportMenuOpen((v) => !v)}
+                    title={t.exportNote}
+                    disabled={!activeEditor}
+                  >
+                    <Download size={14} />
+                  </button>
+                  {exportMenuOpen ? (
+                    <div
+                      className="notes-export-menu"
+                      onMouseLeave={() => setExportMenuOpen(false)}
+                    >
+                      <button onClick={() => handleExport("markdown")}>
+                        {t.exportMarkdown}
+                      </button>
+                      <button onClick={() => handleExport("html")}>
+                        {t.exportHtml}
+                      </button>
+                      <button onClick={() => handleExport("pdf")}>
+                        {t.exportPdf}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   className="notes-focus-toggle"
                   onClick={() => setOutlineVisible((v) => !v)}
@@ -789,6 +854,7 @@ export function NotesView({ language, initialNote }: NotesViewProps) {
                     新内容到位前 .loading 蒙层会盖住编辑区,用户不会看到「上一篇内容残留」的混乱。 */}
                 {editorPayload ? (
                   <NoteEditor
+                    key={editorPayload.id}
                     noteId={editorPayload.id}
                     content={editorPayload.content}
                     onContentChange={handleContentChange}

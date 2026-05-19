@@ -64,6 +64,20 @@ export const api: ArchiveApi = {
   setAutostartEnabled: (enabled) => invoke<void>("set_autostart_enabled", { enabled }),
   // 分类管理
   updateCategories: (categories) => invoke<AppData>("update_categories", { categories }),
+  updateProjectCategories: (projectId, categories) =>
+    invoke<AppData>("update_project_categories", { projectId, categories }),
+  syncProjectCategories: (projectId) =>
+    invoke<AppData>("sync_project_categories", { projectId }),
+  createProjectCategory: (projectId, name) =>
+    invoke<AppData>("create_project_category", { projectId, name }),
+  renameProjectCategory: (projectId, oldName, newName) =>
+    invoke<AppData>("rename_project_category", { projectId, oldName, newName }),
+  deleteProjectCategory: (projectId, category) =>
+    invoke<AppData>("delete_project_category", { projectId, category }),
+  setNoteAssetsPath: (path) => invoke<AppData>("set_note_assets_path", { path }),
+  getNoteAssetsDir: () => invoke<string>("get_note_assets_dir"),
+  repairProjectPaths: () => invoke<[number, AppData]>("repair_project_paths"),
+  repairWorkspaceRoots: () => invoke<[number, number, AppData]>("repair_workspace_roots"),
   // 回收站
   getTrashItems: () => invoke<TrashItem[]>("get_trash_items"),
   deleteProject: (projectId) => invoke<AppData>("delete_project", { projectId }),
@@ -92,6 +106,8 @@ export const api: ArchiveApi = {
     }),
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("copy_file_to", { input }),
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => invoke<void>("move_file_to", { input }),
+  renameFileInPlace: (sourcePath: string, newName: string) =>
+    invoke<string>("rename_file_in_place", { sourcePath, newName }),
   readClipboardFiles: () => invoke<string[]>("read_clipboard_files"),
   startWatching: (path: string) => invoke<void>("start_watching", { path }),
   stopWatching: () => invoke<void>("stop_watching"),
@@ -125,4 +141,7 @@ export const api: ArchiveApi = {
     invoke<void>("permanently_delete_note", { trashId }),
   emptyNotesTrash: () => invoke<void>("empty_notes_trash"),
   saveNoteAsset: (data, ext) => invoke<string>("save_note_asset", { data, ext }),
+  listPendingMigrations: () => invoke<string[]>("list_pending_migrations"),
+  migrateMdToBnote: (oldId: string, bnoteContent: string) =>
+    invoke<NoteMeta>("migrate_md_to_bnote", { oldId, bnoteContent }),
 };

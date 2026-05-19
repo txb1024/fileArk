@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "FileArk - 個人項目資料庫",
+        "title": "FileArk",
         "width": 1280,
         "height": 820,
         "minWidth": 1080,

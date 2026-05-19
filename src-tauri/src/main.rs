@@ -44,7 +44,9 @@ fn create_workspace(app: tauri::AppHandle, name: String) -> Result<WorkspaceRegi
     let mut registry = read_registry(&app)?;
     let id = Uuid::new_v4().to_string();
     let data_file = format!("workspace-{}.json", id);
-    let empty_data = create_default_data();
+    // 用「默认根 / 工作空间名」作为新工作空间的默认根目录,
+    // 避免多个工作空间的项目混在同一个 Documents/個人項目資料庫 下。
+    let empty_data = store::create_default_data_for_workspace(&name);
     let data_path = app_path(&app).join(&data_file);
     let json = serde_json::to_string_pretty(&empty_data).map_err(|e| e.to_string())?;
     fs::write(&data_path, json).map_err(|e| e.to_string())?;
@@ -152,6 +154,8 @@ fn create_project(app: tauri::AppHandle, input: CreateProjectInput) -> Result<Ap
         updated_at: ts.clone(),
         last_opened_at: None,
         recent_files: vec![],
+        // 新项目的分类初始化为当前全局默认分类的副本,之后完全独立
+        categories: data.settings.categories.clone(),
     };
 
     let name_clone = project.name.clone();
@@ -280,8 +284,12 @@ fn rename_project(
 #[tauri::command]
 fn update_root(app: tauri::AppHandle, root: String) -> Result<AppData, String> {
     let mut data = read_data(&app)?;
+    let old_root = data.settings.workspace_root.clone();
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    data.settings.workspace_root = root;
+    data.settings.workspace_root = root.clone();
+    // 切换工作目录(不迁移文件)时,把已存在项目的 path 前缀从旧根改到新根,
+    // 否则点项目卡片打开会指向旧目录,触发「找不到文件」。
+    rewrite_project_paths(&mut data, &old_root, &root);
     write_data(&app, &data)?;
     Ok(data)
 }
@@ -301,6 +309,12 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
     let old_path = Path::new(&input.old_root);
     let new_path = Path::new(&input.new_root);
 
+    // 阻止「新目录是旧目录子目录」/ 反之 的迁移:不阻断会导致 copy 进自己的子目录,
+    // 触发无限递归直到栈溢出 / 磁盘爆,进程崩溃(用户报告:点迁移整个应用退出)。
+    if let Err(e) = ensure_not_nested(old_path, new_path) {
+        return Err(e);
+    }
+
     fs::create_dir_all(&input.new_root).map_err(|e| e.to_string())?;
 
     if input.migrate && old_path.exists() {
@@ -318,9 +332,210 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
         }
     }
 
-    data.settings.workspace_root = input.new_root;
+    let old_root = data.settings.workspace_root.clone();
+    data.settings.workspace_root = input.new_root.clone();
+    // 不管选了「迁移」还是「仅切换」,项目 path 都得跟着改:文件已搬走 → 必须改;
+    // 仅切换 → 用户后续手动把文件挪过去,这一刻起前端已用新根工作,旧路径就是死的。
+    rewrite_project_paths(&mut data, &old_root, &input.new_root);
     write_data(&app, &data)?;
     Ok(data)
+}
+
+/// 检查两个目录是否互为子目录(canonicalize 后 components 比对,大小写不敏感)。
+/// 如果 a == b、a 在 b 之下或 b 在 a 之下,返回 Err 提示用户。
+/// 防止 migrate_root 把目录复制进自己的子目录触发无限递归。
+fn ensure_not_nested(a: &Path, b: &Path) -> Result<(), String> {
+    let canon_a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
+    let canon_b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    let comps_a: Vec<String> = canon_a
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    let comps_b: Vec<String> = canon_b
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    if comps_a == comps_b {
+        return Err("源目录和目标目录相同,无需迁移".to_string());
+    }
+    let nested = if comps_a.len() < comps_b.len() {
+        comps_b.starts_with(&comps_a)
+    } else {
+        comps_a.starts_with(&comps_b)
+    };
+    if nested {
+        return Err(format!(
+            "无法迁移:目标目录是源目录的父目录或子目录\n  {}\n  {}",
+            canon_a.display(),
+            canon_b.display()
+        ));
+    }
+    Ok(())
+}
+
+/// 基于 Path::components 把 `path` 中以 `old_root` 为前缀的部分替换成 `new_root`。///
+/// 之前用 `&path[old_bs.len()..]` 字节切片实现,**含中文路径时如果分隔符差异 / lowercase
+/// 改了字节长度,old_bs.len() 可能落在 UTF-8 字符中间,直接 panic abort 进程**。
+/// components 按路径段比对,对大小写不敏感,绝对安全。
+///
+/// 返回 Some(new_path) 表示前缀匹配并改写;None 表示不匹配,调用者保留原 path。
+fn rewrite_path_prefix(path_str: &str, old_root: &str, new_root: &str) -> Option<String> {
+    let path = Path::new(path_str);
+    let old = Path::new(old_root.trim_end_matches(['\\', '/']));
+
+    let path_comps: Vec<_> = path.components().collect();
+    let old_comps: Vec<_> = old.components().collect();
+    if old_comps.is_empty() || path_comps.len() < old_comps.len() {
+        return None;
+    }
+    // 逐段比较(忽略大小写)。Windows 文件系统不区分大小写,需要这种比对方式。
+    for (oc, pc) in old_comps.iter().zip(path_comps.iter()) {
+        let oc_str = oc.as_os_str().to_string_lossy().to_lowercase();
+        let pc_str = pc.as_os_str().to_string_lossy().to_lowercase();
+        if oc_str != pc_str {
+            return None;
+        }
+    }
+    // 拼接 new_root + 剩余 components
+    let mut new_pb = std::path::PathBuf::from(new_root.trim_end_matches(['\\', '/']));
+    for c in &path_comps[old_comps.len()..] {
+        new_pb.push(c.as_os_str());
+    }
+    Some(new_pb.to_string_lossy().to_string())
+}
+
+/// 把所有项目 path 字段中以旧根为前缀的部分替换成新根。
+fn rewrite_project_paths(data: &mut AppData, old_root: &str, new_root: &str) {
+    if old_root.is_empty() || old_root == new_root {
+        return;
+    }
+    for p in data.projects.iter_mut() {
+        if let Some(new_path) = rewrite_path_prefix(&p.path, old_root, new_root) {
+            p.path = new_path;
+        }
+    }
+}
+
+/// 一次性修复:遍历所有工作空间数据文件,如果 `workspace_root` 还是默认根(说明从没改过,
+/// 是旧版逻辑创建的),改成 `default_root / 工作空间名` 让多个工作空间互相隔离。
+///
+/// 同时**物理迁移**该工作空间下项目的目录:把旧 path 上存在的文件夹整体搬到新 path 下,
+/// 同盘符用 `fs::rename`(秒迁),跨盘符 fallback 到 `copy + remove`。
+///
+/// 返回 [修复的工作空间数, 物理迁移的项目数, 当前活动工作空间的最新 AppData]。
+#[tauri::command]
+fn repair_workspace_roots(app: tauri::AppHandle) -> Result<(usize, usize, AppData), String> {
+    let registry = read_registry(&app)?;
+    let default_root_str = store::default_root().to_string_lossy().to_string();
+    let mut fixed = 0usize;
+    let mut migrated_files = 0usize;
+
+    for ws in &registry.workspaces {
+        let path = store::workspace_data_path(&app, &ws.data_file);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut data: AppData = match serde_json::from_str(&raw) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let cur = data.settings.workspace_root.trim_end_matches(['\\', '/']).to_string();
+        let def = default_root_str.trim_end_matches(['\\', '/']).to_string();
+        if cur != def {
+            continue;
+        }
+        let safe = utils::safe_folder_name(&ws.name);
+        if safe.is_empty() {
+            continue;
+        }
+        let new_root = store::default_root().join(&safe).to_string_lossy().to_string();
+        let old_root = data.settings.workspace_root.clone();
+        // 确保新 root 目录已建
+        let _ = fs::create_dir_all(&new_root);
+        data.settings.workspace_root = new_root.clone();
+
+        // 先迁移文件,再 rewrite_project_paths 改 path 字段:
+        // 旧 path 物理存在且新 path 不存在 → 整目录搬过去。
+        // 用 rewrite_path_prefix 计算 dst,避免字节切片在含中文 / 大小写 / 分隔符差异时 panic。
+        for p in data.projects.iter() {
+            let src_str = p.path.clone();
+            let src = Path::new(&src_str);
+            if !src.exists() {
+                continue;
+            }
+            let dst_str = match rewrite_path_prefix(&src_str, &old_root, &new_root) {
+                Some(s) => s,
+                None => continue,
+            };
+            if dst_str == src_str {
+                continue;
+            }
+            let dst = Path::new(&dst_str);
+            if dst.exists() {
+                continue; // 目标已存在,不覆盖,留给用户手动处理
+            }
+            if let Some(parent) = dst.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            // 同盘符 rename 快;跨盘符走 copy + remove
+            let moved = if fs::rename(src, dst).is_ok() {
+                true
+            } else {
+                match utils::copy_dir_all(src, dst) {
+                    Ok(()) => fs::remove_dir_all(src).is_ok(),
+                    Err(_) => false,
+                }
+            };
+            if moved {
+                migrated_files += 1;
+            }
+        }
+
+        // 最后统一改 path 字段
+        rewrite_project_paths(&mut data, &old_root, &new_root);
+        let new_json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+        fs::write(&path, new_json).map_err(|e| e.to_string())?;
+        fixed += 1;
+    }
+
+    let data = read_data(&app)?;
+    Ok((fixed, migrated_files, data))
+}
+
+/// 一次性修复:把所有「path 不存在」的项目,重置到当前 workspace_root/{项目名} 下。
+/// 用于历史遗留:之前迁移工作目录但项目 path 没跟着改的场景。
+/// 不要求目标目录已存在(只是设置 path,真正打开时按需创建)。
+/// 返回 [修好的项目数, 最新的 AppData]。
+#[tauri::command]
+fn repair_project_paths(app: tauri::AppHandle) -> Result<(usize, AppData), String> {
+    let mut data = read_data(&app)?;
+    let root = data.settings.workspace_root.clone();
+    if root.is_empty() {
+        return Ok((0, data));
+    }
+    let root_path = Path::new(&root);
+    let mut fixed = 0usize;
+    for p in data.projects.iter_mut() {
+        if Path::new(&p.path).exists() {
+            continue;
+        }
+        // 重置 path 为 {workspace_root}/{项目名};即使目录还不存在也改,
+        // 后续打开 / 添加文件时再 fs::create_dir_all。
+        let candidate = root_path.join(&p.name);
+        let new_path = candidate.to_string_lossy().to_string();
+        if p.path != new_path {
+            p.path = new_path;
+            fixed += 1;
+        }
+    }
+    if fixed > 0 {
+        write_data(&app, &data)?;
+    }
+    Ok((fixed, data))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -330,9 +545,185 @@ fn migrate_root(app: tauri::AppHandle, input: MigrateRootInput) -> Result<AppDat
 #[tauri::command]
 fn update_categories(app: tauri::AppHandle, categories: Vec<String>) -> Result<AppData, String> {
     let mut data = read_data(&app)?;
-    data.settings.categories = categories;
+    // 写入时按名称排序(大小写不敏感),保证所有展示自动有序
+    let mut sorted = categories;
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    data.settings.categories = sorted;
     write_data(&app, &data)?;
     Ok(data)
+}
+
+/// 更新单个项目的分类列表(项目级独立,不影响其他项目)。
+/// 名称按大小写不敏感排序后写入,保证侧栏展示顺序稳定。
+#[tauri::command]
+fn update_project_categories(
+    app: tauri::AppHandle,
+    project_id: String,
+    categories: Vec<String>,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let mut sorted = categories;
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let project = data
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "项目不存在".to_string())?;
+    project.categories = sorted;
+    project.updated_at = utils::now_rfc3339();
+    write_data(&app, &data)?;
+    Ok(data)
+}
+
+/// 扫描项目根目录下的一级子目录,把结果同步到 project.categories(过滤隐藏目录)。
+/// 用户在文件管理器里增删/重命名分类目录后,前端调用此命令把内存 categories
+/// 与磁盘对齐。文件监视器触发时也会再调一次,保持双向一致。
+#[tauri::command]
+fn sync_project_categories(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let project_path = data
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "项目不存在".to_string())?
+        .path
+        .clone();
+    let path = Path::new(&project_path);
+    if !path.exists() {
+        return Ok(data);
+    }
+    let mut scanned: Vec<String> = vec![];
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // 跳过隐藏目录(.git/.DS_Store 等)
+            if !name.starts_with('.') {
+                scanned.push(name);
+            }
+        }
+    }
+    scanned.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    let project = data
+        .projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .unwrap();
+    if project.categories != scanned {
+        project.categories = scanned;
+        project.updated_at = utils::now_rfc3339();
+        write_data(&app, &data)?;
+    }
+    Ok(data)
+}
+
+/// 在项目根下创建一级分类目录(物理 mkdir),返回 sync 后的 AppData。
+#[tauri::command]
+fn create_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    name: String,
+) -> Result<AppData, String> {
+    let project_path = {
+        let data = read_data(&app)?;
+        data.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?
+            .path
+            .clone()
+    };
+    let dir = Path::new(&project_path).join(&name);
+    if dir.exists() {
+        return Err("分类已存在".to_string());
+    }
+    fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    sync_project_categories(app, project_id)
+}
+
+/// 重命名分类目录(物理 rename),返回 sync 后的 AppData。
+#[tauri::command]
+fn rename_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    old_name: String,
+    new_name: String,
+) -> Result<AppData, String> {
+    let project_path = {
+        let data = read_data(&app)?;
+        data.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?
+            .path
+            .clone()
+    };
+    let from = Path::new(&project_path).join(&old_name);
+    let to = Path::new(&project_path).join(&new_name);
+    if !from.exists() {
+        return Err("源分类目录不存在".to_string());
+    }
+    if to.exists() {
+        return Err("目标分类目录已存在".to_string());
+    }
+    fs::rename(&from, &to).map_err(|e| e.to_string())?;
+    sync_project_categories(app, project_id)
+}
+
+/// 删除分类目录(整目录移到回收站,可在回收站恢复)。返回 sync 后的 AppData。
+#[tauri::command]
+fn delete_project_category(
+    app: tauri::AppHandle,
+    project_id: String,
+    category: String,
+) -> Result<AppData, String> {
+    let (project_path, project_name) = {
+        let data = read_data(&app)?;
+        let p = data
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| "项目不存在".to_string())?;
+        (p.path.clone(), p.name.clone())
+    };
+    let dir = Path::new(&project_path).join(&category);
+    if dir.exists() {
+        let trashed = store::move_file_into_trash(
+            &app,
+            &dir,
+            Some(project_id.clone()),
+            Some(project_name),
+            Some(category.clone()),
+        )?;
+        let mut trash = store::read_trash(&app)?;
+        trash.files.push(trashed);
+        store::write_trash(&app, &trash)?;
+    }
+    sync_project_categories(app, project_id)
+}
+
+/// 自定义便签附件存放路径。传入 None 或空字符串 = 恢复默认 `{workspaceRoot}/notes/assets`。
+#[tauri::command]
+fn set_note_assets_path(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<AppData, String> {
+    let mut data = read_data(&app)?;
+    let cleaned = path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    data.settings.note_assets_path = cleaned;
+    write_data(&app, &data)?;
+    Ok(data)
+}
+
+/// 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在。
+#[tauri::command]
+fn get_note_assets_dir(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(store::notes_assets_dir(&app).to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -373,7 +764,10 @@ fn get_category_counts(
 // ═══════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
+fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    // 注意:不能用 `async fn` + 同步 rx.recv() — 会阻塞 async runtime 导致 dialog
+    // callback 永远拿不到执行,UI 卡住。改成 sync 命令(Tauri 自动 spawn_blocking)
+    // + std::sync::mpsc 阻塞这个独立 worker 线程,主 runtime 不受影响。
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().pick_folder(move |path| {
@@ -383,7 +777,8 @@ async fn select_root(app: tauri::AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn select_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+fn select_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    // 同 select_root,改 sync 防 async runtime 死锁
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
@@ -496,6 +891,12 @@ fn open_file(_app: tauri::AppHandle, file_path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn open_folder(_app: tauri::AppHandle, folder_path: String) -> Result<(), String> {
+    // 目录不存在(常见于:迁移工作目录后,旧分类目录还没建)就按需创建,
+    // 避免 Windows 资源管理器弹出「找不到文件」对话框。
+    let p = Path::new(&folder_path);
+    if !p.exists() {
+        fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
     open::that(&folder_path).map_err(|e| e.to_string())
 }
 
@@ -573,6 +974,37 @@ fn move_file_to(input: MoveFileInput) -> Result<(), String> {
     } else {
         fs::rename(source, &target).map_err(|e| e.to_string())
     }
+}
+
+/// 原地重命名文件/文件夹:目标名已存在则报错(不自动加 (1))。
+#[tauri::command]
+fn rename_file_in_place(source_path: String, new_name: String) -> Result<String, String> {
+    let source = Path::new(&source_path);
+    if !source.exists() {
+        return Err("源文件不存在".to_string());
+    }
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    if trimmed.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+        return Err("名称不能包含 \\ / : * ? \" < > |".to_string());
+    }
+    let parent = source.parent().ok_or("无法获取父目录")?;
+    let target = parent.join(trimmed);
+    // 同名(忽略大小写)且不是 case-only rename → 视为相同,直接返回
+    let current_name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if current_name == trimmed {
+        return Ok(source_path);
+    }
+    if target.exists() {
+        return Err(format!("已存在同名文件:{}", trimmed));
+    }
+    fs::rename(source, &target).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -691,41 +1123,68 @@ fn search_project_files(app: tauri::AppHandle, query: String) -> Result<Vec<Sear
     }
 
     let mut results: Vec<SearchFileResult> = Vec::new();
-    let max_results = 20;
+    let max_results = 30;
+    let max_depth = 4; // 分类目录下最多递归 4 层(够覆盖大多数项目结构,不会无限)
 
-    for project in &data.projects {
+    'outer: for project in &data.projects {
         let project_path = Path::new(&project.path);
         if !project_path.exists() {
             continue;
         }
-        for category in &data.settings.categories {
+        // 用 project.categories(项目级独立),空时回退扫一级目录
+        let categories: Vec<String> = if project.categories.is_empty() {
+            fs::read_dir(project_path)
+                .ok()
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                        .filter_map(|e| {
+                            let n = e.file_name().to_string_lossy().to_string();
+                            if n.starts_with('.') { None } else { Some(n) }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            project.categories.clone()
+        };
+        for category in &categories {
             let cat_path = project_path.join(category);
             if !cat_path.exists() || !cat_path.is_dir() {
                 continue;
             }
-            let entries = match fs::read_dir(&cat_path) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.to_lowercase().contains(&lower) {
-                    continue;
-                }
-                let path = entry.path();
-                let ft = entry.file_type().ok();
-                let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
-                let metadata = entry.metadata().ok();
-                results.push(SearchFileResult {
-                    name,
-                    path: path.to_string_lossy().to_string(),
-                    project_name: project.name.clone(),
-                    category: category.clone(),
-                    size: metadata.map(|m| m.len() as i64).unwrap_or(0),
-                    is_directory: is_dir,
-                });
-                if results.len() >= max_results {
-                    return Ok(results);
+            // 用栈做 DFS,递归扫子目录,文件名/文件夹名命中即加结果
+            let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(cat_path, 0)];
+            while let Some((dir, depth)) = stack.pop() {
+                let entries = match fs::read_dir(&dir) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    let path = entry.path();
+                    let ft = entry.file_type().ok();
+                    let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+                    if name.to_lowercase().contains(&lower) {
+                        let metadata = entry.metadata().ok();
+                        results.push(SearchFileResult {
+                            name: name.clone(),
+                            path: path.to_string_lossy().to_string(),
+                            project_name: project.name.clone(),
+                            category: category.clone(),
+                            size: metadata.map(|m| m.len() as i64).unwrap_or(0),
+                            is_directory: is_dir,
+                        });
+                        if results.len() >= max_results {
+                            break 'outer;
+                        }
+                    }
+                    if is_dir && depth < max_depth {
+                        stack.push((path, depth + 1));
+                    }
                 }
             }
         }
@@ -991,8 +1450,11 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
     if lower.is_empty() {
         return Ok(index.meta.values().cloned().collect());
     }
+    // 限制结果数,防止便签量大时把 N 个文件全 read 一遍
+    let max_results = 30;
     let mut results: Vec<NoteMeta> = vec![];
-    for (id, note) in index.meta.iter() {
+    // 第一遍:只查 meta(零 IO,极快)。命中 max_results 直接返回。
+    for note in index.meta.values() {
         let meta_match = note.title.to_lowercase().contains(&lower)
             || note.name.to_lowercase().contains(&lower)
             || note.parent.to_lowercase().contains(&lower)
@@ -1000,16 +1462,49 @@ fn search_notes(app: tauri::AppHandle, query: String) -> Result<Vec<NoteMeta>, S
             || note.snippet.to_lowercase().contains(&lower);
         if meta_match {
             results.push(note.clone());
+            if results.len() >= max_results {
+                results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                return Ok(results);
+            }
+        }
+    }
+    // 第二遍:meta 没命中的便签才 read 正文(慢路径)。
+    let already: std::collections::HashSet<String> =
+        results.iter().map(|r| r.id.clone()).collect();
+    for (id, note) in index.meta.iter() {
+        if already.contains(id) {
             continue;
         }
         if let Ok(content) = read_note_content(&app, id) {
-            if content.to_lowercase().contains(&lower) {
+            let haystack = if id.ends_with(".bnote") {
+                extract_plain_text_from_blocks(&content).to_lowercase()
+            } else {
+                content.to_lowercase()
+            };
+            if haystack.contains(&lower) {
                 results.push(note.clone());
+                if results.len() >= max_results {
+                    break;
+                }
             }
         }
     }
     results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(results)
+}
+
+#[tauri::command]
+fn list_pending_migrations(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    list_pending_migrations_entry(&app)
+}
+
+#[tauri::command]
+fn migrate_md_to_bnote(
+    app: tauri::AppHandle,
+    old_id: String,
+    bnote_content: String,
+) -> Result<NoteMeta, String> {
+    migrate_md_to_bnote_entry(&app, &old_id, &bnote_content)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1154,6 +1649,8 @@ fn restore_project(app: tauri::AppHandle, trash_item_id: String) -> Result<AppDa
         updated_at: ts.clone(),
         last_opened_at: None,
         recent_files: vec![],
+        // 恢复时用当前全局分类作为初始;之后该项目独立。
+        categories: data.settings.categories.clone(),
     };
 
     data.projects.push(project);
@@ -1419,6 +1916,15 @@ fn main() {
             check_root_files,
             migrate_root,
             update_categories,
+            update_project_categories,
+            sync_project_categories,
+            create_project_category,
+            rename_project_category,
+            delete_project_category,
+            set_note_assets_path,
+            get_note_assets_dir,
+            repair_project_paths,
+            repair_workspace_roots,
             select_root,
             select_files,
             list_category_files_cmd,
@@ -1430,6 +1936,7 @@ fn main() {
             delete_file,
             copy_file_to,
             move_file_to,
+            rename_file_in_place,
             read_file_content,
             read_file_binary,
             get_preview_info,
@@ -1471,6 +1978,8 @@ fn main() {
             delete_note,
             delete_folder,
             search_notes,
+            list_pending_migrations,
+            migrate_md_to_bnote,
             list_trashed_notes,
             restore_note,
             permanently_delete_note,

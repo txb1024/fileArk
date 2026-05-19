@@ -17,6 +17,8 @@ export type Project = {
   updatedAt: string;
   lastOpenedAt: string | null;
   recentFiles: RecentFile[];
+  /** 项目级分类列表(独立于其他项目)。新建项目时复制 settings.categories 作为初始值。 */
+  categories: string[];
 };
 
 export type InboxItem = {
@@ -45,6 +47,7 @@ export type AppData = {
   settings: {
     workspaceRoot: string;
     categories: string[];
+    noteAssetsPath?: string | null;
   };
 };
 
@@ -221,6 +224,7 @@ export type Messages = {
   noMatchBody: string;
   folder: string;
   rootFiles: string;
+  rootDropHint: string;
   folderNamePrompt: string;
   deleteFile: string;
   copyFile: string;
@@ -304,6 +308,19 @@ export type Messages = {
   workspaceRootDesc: string;
   workspaceRootNotSet: string;
   changeRoot: string;
+  repairPaths: string;
+  repairPathsDesc: string;
+  repairPathsResult: string;
+  repairPathsNone: string;
+  repairWorkspaces: string;
+  repairWorkspacesDesc: string;
+  repairWorkspacesResult: string;
+  repairWorkspacesNone: string;
+  noteAssets: string;
+  noteAssetsDesc: string;
+  noteAssetsDefault: string;
+  changeNoteAssets: string;
+  resetNoteAssets: string;
   categoryManagement: string;
   editCategory: string;
   database: string;
@@ -341,6 +358,30 @@ export type ArchiveApi = {
   getAutostartEnabled: () => Promise<boolean>;
   setAutostartEnabled: (enabled: boolean) => Promise<void>;
   updateCategories: (categories: string[]) => Promise<AppData>;
+  /** 项目级分类更新(独立于其他项目)。 */
+  updateProjectCategories: (projectId: string, categories: string[]) => Promise<AppData>;
+  /** 扫描项目根目录,把磁盘上的一级子目录同步到 project.categories。 */
+  syncProjectCategories: (projectId: string) => Promise<AppData>;
+  /** 在项目根创建分类目录(物理 mkdir),返回 sync 后的 AppData。 */
+  createProjectCategory: (projectId: string, name: string) => Promise<AppData>;
+  /** 重命名分类目录(物理 rename),返回 sync 后的 AppData。 */
+  renameProjectCategory: (
+    projectId: string,
+    oldName: string,
+    newName: string,
+  ) => Promise<AppData>;
+  /** 删除分类目录(整目录移到回收站),返回 sync 后的 AppData。 */
+  deleteProjectCategory: (projectId: string, category: string) => Promise<AppData>;
+  /** 自定义便签附件目录。传 null 恢复默认 */
+  setNoteAssetsPath: (path: string | null) => Promise<AppData>;
+  /** 返回当前生效的附件目录(自定义优先,否则默认),并确保目录存在 */
+  getNoteAssetsDir: () => Promise<string>;
+  /** 历史遗留修复:对所有 path 不存在的项目,按 name 在当前 workspace_root 下重新定位。
+   *  返回 [修好的项目数, 最新的 AppData]。 */
+  repairProjectPaths: () => Promise<[number, AppData]>;
+  /** 历史遗留修复:把所有 workspace_root 还是默认根的工作空间,自动改成 default_root/{工作空间名}
+   *  并物理迁移项目目录。返回 [修复的工作空间数, 迁移的项目目录数, 当前 data]。 */
+  repairWorkspaceRoots: () => Promise<[number, number, AppData]>;
   getTrashItems: () => Promise<TrashItem[]>;
   deleteProject: (projectId: string) => Promise<AppData>;
   renameProject: (projectId: string, newName: string) => Promise<AppData>;
@@ -367,6 +408,7 @@ export type ArchiveApi = {
   ) => Promise<void>;
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
+  renameFileInPlace: (sourcePath: string, newName: string) => Promise<string>;
   readClipboardFiles: () => Promise<string[]>;
   startWatching: (path: string) => Promise<void>;
   stopWatching: () => Promise<void>;
@@ -393,5 +435,9 @@ export type ArchiveApi = {
   emptyNotesTrash: () => Promise<void>;
   /** 保存便签内嵌资源（图片等），返回绝对路径，前端用 convertFileSrc 转 webview URL */
   saveNoteAsset: (data: string, ext: string) => Promise<string>;
+  /** 列出仍为 .md 后缀的便签 id, 启动后逐个迁移到 .bnote */
+  listPendingMigrations: () => Promise<string[]>;
+  /** 把指定 .md 便签替换为 .bnote (前端用 BlockNote 解析好 markdown 后调用) */
+  migrateMdToBnote: (oldId: string, bnoteContent: string) => Promise<NoteMeta>;
 };
 

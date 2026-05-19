@@ -79,6 +79,35 @@ export function SettingsView({
     setData(await api.updateRoot(root));
   }
 
+  async function chooseNoteAssetsDir() {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: true, multiple: false });
+    if (typeof picked !== "string") return;
+    setData(await api.setNoteAssetsPath(picked));
+  }
+
+  async function resetNoteAssetsDir() {
+    setData(await api.setNoteAssetsPath(null));
+  }
+
+  async function repairProjectPaths() {
+    const [count, updated] = await api.repairProjectPaths();
+    setData(updated);
+    const msg = count > 0 ? t.repairPathsResult.replace("{count}", String(count)) : t.repairPathsNone;
+    window.alert(msg);
+  }
+
+  async function repairWorkspaceRoots() {
+    const [wsCount, fileCount, updated] = await api.repairWorkspaceRoots();
+    setData(updated);
+    const msg = wsCount > 0
+      ? t.repairWorkspacesResult
+          .replace("{wsCount}", String(wsCount))
+          .replace("{fileCount}", String(fileCount))
+      : t.repairWorkspacesNone;
+    window.alert(msg);
+  }
+
   return (
     <section className="page settings-page">
       <div className="page-header">
@@ -194,6 +223,51 @@ export function SettingsView({
           <button className="secondary" onClick={chooseRoot}>
             {t.changeRoot}
           </button>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <strong>{t.repairPaths}</strong>
+            <p>{t.repairPathsDesc}</p>
+          </div>
+          <button className="secondary" onClick={repairProjectPaths}>
+            {t.repairPaths}
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <strong>{t.repairWorkspaces}</strong>
+            <p>{t.repairWorkspacesDesc}</p>
+          </div>
+          <button className="secondary" onClick={repairWorkspaceRoots}>
+            {t.repairWorkspaces}
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <strong>{t.noteAssets}</strong>
+            <p>{t.noteAssetsDesc}</p>
+            <p
+              className="path-display"
+              title={data.settings.noteAssetsPath ?? undefined}
+            >
+              {data.settings.noteAssetsPath
+                ? data.settings.noteAssetsPath
+                : t.noteAssetsDefault}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {data.settings.noteAssetsPath ? (
+              <button className="secondary" onClick={resetNoteAssetsDir}>
+                {t.resetNoteAssets}
+              </button>
+            ) : null}
+            <button className="secondary" onClick={chooseNoteAssetsDir}>
+              {t.changeNoteAssets}
+            </button>
+          </div>
         </div>
       </div>
 

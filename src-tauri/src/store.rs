@@ -31,11 +31,22 @@ pub fn create_default_data() -> AppData {
         settings: crate::models::Settings {
             workspace_root: default_root().to_string_lossy().to_string(),
             categories: default_categories(),
+            note_assets_path: None,
         },
     }
 }
 
-fn default_root() -> std::path::PathBuf {
+/// 用「默认根 / 工作空间名」作为新工作空间的默认根目录,避免和其他工作空间混在一个目录。
+pub fn create_default_data_for_workspace(workspace_name: &str) -> AppData {
+    let mut data = create_default_data();
+    let safe = crate::utils::safe_folder_name(workspace_name);
+    if !safe.is_empty() {
+        data.settings.workspace_root = default_root().join(safe).to_string_lossy().to_string();
+    }
+    data
+}
+
+pub fn default_root() -> std::path::PathBuf {
     home_dir().join("Documents").join("個人項目資料庫")
 }
 
@@ -100,7 +111,7 @@ fn app_data_dir(app: &AppHandle) -> std::path::PathBuf {
     app.path().app_data_dir().unwrap()
 }
 
-fn workspace_data_path(app: &AppHandle, data_file: &str) -> std::path::PathBuf {
+pub fn workspace_data_path(app: &AppHandle, data_file: &str) -> std::path::PathBuf {
     app_data_dir(app).join(data_file)
 }
 
@@ -136,7 +147,24 @@ pub fn read_data(app: &AppHandle) -> Result<AppData, String> {
 
     let raw = fs::read_to_string(&data_path).map_err(|e| e.to_string())?;
     match serde_json::from_str::<AppData>(&raw) {
-        Ok(data) => Ok(data),
+        Ok(mut data) => {
+            // 分类名按字母序排,所有展示自动有序
+            data.settings
+                .categories
+                .sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            // 老数据兼容:project.categories 缺失时,补成 settings.categories 副本,
+            // 之后该项目的分类完全独立。
+            for project in &mut data.projects {
+                if project.categories.is_empty() {
+                    project.categories = data.settings.categories.clone();
+                } else {
+                    project
+                        .categories
+                        .sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                }
+            }
+            Ok(data)
+        }
         Err(_) => {
             let backup_path = data_path.with_extension("json.corrupt");
             let _ = fs::rename(&data_path, &backup_path);
@@ -488,6 +516,21 @@ pub fn notes_dir(app: &AppHandle) -> std::path::PathBuf {
 }
 
 pub fn notes_assets_dir(app: &AppHandle) -> std::path::PathBuf {
+    // 优先使用 settings 中的自定义路径(必须存在或可创建);否则 fallback 到默认 `{workspaceRoot}/notes/assets`
+    if let Ok(data) = read_data(app) {
+        if let Some(custom) = data.settings.note_assets_path.as_deref() {
+            let trimmed = custom.trim();
+            if !trimmed.is_empty() {
+                let p: std::path::PathBuf = std::path::PathBuf::from(trimmed);
+                if !p.exists() {
+                    let _ = fs::create_dir_all(&p);
+                }
+                if p.exists() {
+                    return p;
+                }
+            }
+        }
+    }
     let dir = notes_dir(app).join("assets");
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
@@ -606,7 +649,30 @@ pub fn scan_tree(app: &AppHandle, dir: &Path, parent: &str, index: &NotesIndex) 
                 parent: parent.to_string(),
                 children,
             });
+        } else if path.extension().and_then(|e| e.to_str()) == Some("bnote") {
+            let rel = join_rel(parent, &name);
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&name)
+                .to_string();
+            let meta = index.meta.get(&rel).cloned().unwrap_or_else(|| {
+                let now = crate::utils::now_rfc3339();
+                NoteMeta {
+                    id: rel.clone(),
+                    name: stem.clone(),
+                    parent: parent.to_string(),
+                    title: stem.clone(),
+                    tags: vec![],
+                    pinned: false,
+                    snippet: String::new(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                }
+            });
+            notes.push(NoteTreeNode::Note(meta));
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            // 老 .md 仍参与树展示,等前端启动后逐个迁移
             let rel = join_rel(parent, &name);
             let stem = path
                 .file_stem()
@@ -642,7 +708,8 @@ pub fn scan_tree(app: &AppHandle, dir: &Path, parent: &str, index: &NotesIndex) 
         (NoteTreeNode::Note(am), NoteTreeNode::Note(bm)) => match (am.pinned, bm.pinned) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => bm.updated_at.cmp(&am.updated_at),
+            // 按创建时间倒序(新建的在最上面)。之前用 updated_at,会因每次编辑跳位置。
+            _ => bm.created_at.cmp(&am.created_at),
         },
         _ => std::cmp::Ordering::Equal,
     });
@@ -707,11 +774,12 @@ pub fn create_note_entry(app: &AppHandle, parent: &str, name: Option<&str>) -> R
         fs::create_dir_all(&parent_abs).map_err(|e| e.to_string())?;
     }
     let base = name.map(sanitize_name).unwrap_or_else(|| "未命名便签".to_string());
-    let filename = unique_name(&parent_abs, &base, Some("md"));
-    let stem = filename.trim_end_matches(".md").to_string();
+    let filename = unique_name(&parent_abs, &base, Some("bnote"));
+    let stem = filename.trim_end_matches(".bnote").to_string();
     let id = join_rel(&parent, &filename);
     let now = crate::utils::now_rfc3339();
-    let default_content = format!("# {}\n\n", stem);
+    // 默认内容:一个 H1 标题 + 一个空段落,作为 BlockNote 最小可用文档
+    let default_content = default_bnote_with_title(&stem);
     write_note_content(app, &id, &default_content)?;
 
     let meta = NoteMeta {
@@ -729,6 +797,12 @@ pub fn create_note_entry(app: &AppHandle, parent: &str, name: Option<&str>) -> R
     index.meta.insert(id, meta.clone());
     write_notes_index(app, &index)?;
     Ok(meta)
+}
+
+/// 构造一个最小的 BlockNote JSON,只含一个空段落。BlockNote 内部会用默认填充。
+/// 不内置 H1 标题,避免 schema 不匹配;用户开始编辑时自行加。
+fn default_bnote_with_title(_title: &str) -> String {
+    r#"[{"type":"paragraph","content":[]}]"#.to_string()
 }
 
 pub fn create_folder_entry(app: &AppHandle, parent: &str, name: &str) -> Result<NoteTreeNode, String> {
@@ -749,8 +823,17 @@ pub fn save_note_entry(app: &AppHandle, id: &str, content: &str) -> Result<NoteM
     write_note_content(app, id, content)?;
     let mut index = read_notes_index(app)?;
     let now = crate::utils::now_rfc3339();
-    let snippet = generate_snippet(content, 120);
-    let title = extract_title_from_content(content);
+    let is_bnote = id.ends_with(".bnote");
+    let snippet = if is_bnote {
+        generate_snippet_from_blocks(content, 1000)
+    } else {
+        generate_snippet(content, 1000)
+    };
+    let title = if is_bnote {
+        extract_title_from_blocks(content)
+    } else {
+        extract_title_from_content(content)
+    };
     let path_obj = std::path::Path::new(id);
     let stem = path_obj.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
     let parent = path_obj
@@ -797,11 +880,16 @@ pub fn rename_note_entry(app: &AppHandle, id: &str, new_name: &str) -> Result<No
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
     let base = sanitize_name(new_name);
-    let new_filename = unique_name(parent_abs, &base, Some("md"));
+    // 保持原后缀(迁移期 .md 与 .bnote 共存)
+    let ext = if id.ends_with(".md") { "md" } else { "bnote" };
+    let new_filename = unique_name(parent_abs, &base, Some(ext));
     let new_abs = parent_abs.join(&new_filename);
     fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
     let new_id = join_rel(&parent_rel, &new_filename);
-    let new_stem = new_filename.trim_end_matches(".md").to_string();
+    let new_stem = new_filename
+        .trim_end_matches(".bnote")
+        .trim_end_matches(".md")
+        .to_string();
 
     let mut index = read_notes_index(app)?;
     let mut meta = index.meta.remove(id).unwrap_or(NoteMeta {
@@ -852,10 +940,14 @@ pub fn move_note_entry(app: &AppHandle, id: &str, new_parent: &str) -> Result<No
     let filename = old_abs
         .file_name()
         .and_then(|f| f.to_str())
-        .unwrap_or("note.md")
+        .unwrap_or("note.bnote")
         .to_string();
-    let stem = filename.trim_end_matches(".md").to_string();
-    let final_filename = unique_name(&new_parent_abs, &stem, Some("md"));
+    let ext = if filename.ends_with(".md") { "md" } else { "bnote" };
+    let stem = filename
+        .trim_end_matches(".bnote")
+        .trim_end_matches(".md")
+        .to_string();
+    let final_filename = unique_name(&new_parent_abs, &stem, Some(ext));
     let new_abs = new_parent_abs.join(&final_filename);
     fs::rename(&old_abs, &new_abs).map_err(|e| e.to_string())?;
     let new_id = join_rel(&new_parent, &final_filename);
@@ -874,7 +966,10 @@ pub fn move_note_entry(app: &AppHandle, id: &str, new_parent: &str) -> Result<No
     });
     meta.id = new_id.clone();
     meta.parent = new_parent;
-    meta.name = final_filename.trim_end_matches(".md").to_string();
+    meta.name = final_filename
+        .trim_end_matches(".bnote")
+        .trim_end_matches(".md")
+        .to_string();
     meta.updated_at = crate::utils::now_rfc3339();
     index.meta.insert(new_id, meta.clone());
     write_notes_index(app, &index)?;
@@ -998,13 +1093,17 @@ pub fn restore_note_entry(app: &AppHandle, trash_id: &str) -> Result<NoteMeta, S
         .file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
     let parent_rel = std::path::Path::new(&original)
         .parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-    let final_filename = unique_name(&parent_abs, &stem, Some("md"));
+    let ext = if original.ends_with(".md") { "md" } else { "bnote" };
+    let final_filename = unique_name(&parent_abs, &stem, Some(ext));
     let new_id = join_rel(&parent_rel, &final_filename);
     write_note_content(app, &new_id, &trashed.content)?;
 
     let mut meta = trashed.meta.clone();
     meta.id = new_id.clone();
-    meta.name = final_filename.trim_end_matches(".md").to_string();
+    meta.name = final_filename
+        .trim_end_matches(".bnote")
+        .trim_end_matches(".md")
+        .to_string();
     meta.parent = parent_rel;
     meta.updated_at = crate::utils::now_rfc3339();
     index.meta.insert(new_id, meta.clone());
@@ -1024,6 +1123,108 @@ pub fn empty_notes_trash_store(app: &AppHandle) -> Result<(), String> {
     write_notes_index(app, &index)
 }
 
+/// 列出所有"待迁移"的便签 id(仍然是 .md 后缀)
+pub fn list_pending_migrations_entry(app: &AppHandle) -> Result<Vec<String>, String> {
+    let root = notes_dir(app);
+    let mut pending: Vec<String> = vec![];
+    collect_md_recursive(&root, "", &mut pending);
+    Ok(pending)
+}
+
+fn collect_md_recursive(dir: &Path, parent_rel: &str, out: &mut Vec<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "assets" || name == "index.json" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let next_parent = if parent_rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", parent_rel, name)
+            };
+            collect_md_recursive(&path, &next_parent, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let id = if parent_rel.is_empty() {
+                name
+            } else {
+                format!("{}/{}", parent_rel, name)
+            };
+            out.push(id);
+        }
+    }
+}
+
+/// 把指定 .md 便签迁移为 .bnote:把转好的 Block JSON 写入,老 .md 备份为 .md.bak,index 中 id 替换
+pub fn migrate_md_to_bnote_entry(
+    app: &AppHandle,
+    old_id: &str,
+    bnote_content: &str,
+) -> Result<NoteMeta, String> {
+    if !old_id.ends_with(".md") {
+        return Err("Only .md notes can be migrated".to_string());
+    }
+    let old_abs = abs_from_id(app, old_id);
+    if !old_abs.exists() {
+        return Err("Source note not found".to_string());
+    }
+    let parent_abs = old_abs.parent().ok_or_else(|| "Invalid path".to_string())?;
+    let parent_rel: String = std::path::Path::new(old_id)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let stem = old_abs
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("note")
+        .to_string();
+
+    // 新文件名:同 stem + .bnote;若已存在则 unique
+    let bnote_filename = unique_name(parent_abs, &stem, Some("bnote"));
+    let bnote_abs = parent_abs.join(&bnote_filename);
+    let new_id = join_rel(&parent_rel, &bnote_filename);
+
+    // 1) 写入 Block JSON
+    fs::write(&bnote_abs, bnote_content).map_err(|e| format!("写入 .bnote 失败: {}", e))?;
+    // 2) 把老 .md 改成 .md.bak(保留以便回滚)
+    let bak_name = format!("{}.bak", old_abs.file_name().and_then(|f| f.to_str()).unwrap_or("note.md"));
+    let bak_abs = parent_abs.join(bak_name);
+    let _ = fs::rename(&old_abs, &bak_abs);
+
+    // 3) 更新 index:把 old_id 的 meta 改写到 new_id,提取新 title/snippet
+    let mut index = read_notes_index(app)?;
+    let now = crate::utils::now_rfc3339();
+    let new_stem = bnote_filename.trim_end_matches(".bnote").to_string();
+    let title = extract_title_from_blocks(bnote_content).unwrap_or_else(|| new_stem.clone());
+    let snippet = generate_snippet_from_blocks(bnote_content, 1000);
+
+    let mut meta = index.meta.remove(old_id).unwrap_or(NoteMeta {
+        id: new_id.clone(),
+        name: new_stem.clone(),
+        parent: parent_rel.clone(),
+        title: title.clone(),
+        tags: vec![],
+        pinned: false,
+        snippet: snippet.clone(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    });
+    meta.id = new_id.clone();
+    meta.name = new_stem;
+    meta.parent = parent_rel;
+    meta.title = title;
+    meta.snippet = snippet;
+    meta.updated_at = now;
+    index.meta.insert(new_id, meta.clone());
+    write_notes_index(app, &index)?;
+    Ok(meta)
+}
+
 /// 在 Markdown 内容的第一行提取 h1 标题（只匹配单个 # 开头）
 pub fn extract_title_from_content(content: &str) -> Option<String> {
     content
@@ -1034,6 +1235,148 @@ pub fn extract_title_from_content(content: &str) -> Option<String> {
         })
         .map(|line| line.trim().trim_start_matches('#').trim().to_string())
         .filter(|t| !t.is_empty())
+}
+
+/// 从 BlockNote 的 Block JSON 数组中提取首个 H1 标题块的纯文本
+pub fn extract_title_from_blocks(json: &str) -> Option<String> {
+    let blocks: serde_json::Value = serde_json::from_str(json).ok()?;
+    let arr = blocks.as_array()?;
+    for block in arr {
+        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if block_type == "heading" {
+            let level = block
+                .get("props")
+                .and_then(|p| p.get("level"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if level == 1 {
+                let text = collect_inline_text(block.get("content"));
+                let trimmed = text.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 从 BlockNote 的 Block JSON 数组提取所有纯文本(用于 snippet/搜索),按块用空格隔开
+pub fn extract_plain_text_from_blocks(json: &str) -> String {
+    let parsed = match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+    let mut buf = String::new();
+    collect_blocks_text(&parsed, &mut buf);
+    buf.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// 生成 snippet:从 blocks 抽取纯文本去掉第一个 H1 后截断
+pub fn generate_snippet_from_blocks(json: &str, max_len: usize) -> String {
+    let parsed = match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+    let arr = match parsed.as_array() {
+        Some(a) => a,
+        None => return String::new(),
+    };
+    let mut first_h1_skipped = false;
+    let mut buf = String::new();
+    for block in arr {
+        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !first_h1_skipped && block_type == "heading" {
+            let level = block
+                .get("props")
+                .and_then(|p| p.get("level"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if level == 1 {
+                first_h1_skipped = true;
+                continue;
+            }
+        }
+        let mut tmp = String::new();
+        collect_blocks_text(block, &mut tmp);
+        if !tmp.is_empty() {
+            if !buf.is_empty() {
+                buf.push(' ');
+            }
+            buf.push_str(&tmp);
+        }
+    }
+    let normalized = buf.split_whitespace().collect::<Vec<&str>>().join(" ");
+    if normalized.len() <= max_len {
+        normalized
+    } else {
+        let end = normalized
+            .char_indices()
+            .nth(max_len)
+            .map(|(i, _)| i)
+            .unwrap_or(normalized.len());
+        format!("{}…", &normalized[..end])
+    }
+}
+
+/// 递归收集任意 JSON 节点下的所有 text 字段
+fn collect_blocks_text(node: &serde_json::Value, out: &mut String) {
+    match node {
+        serde_json::Value::Array(arr) => {
+            for child in arr {
+                collect_blocks_text(child, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // BlockNote 块/内联结构:有 content 和 children 两条递归路径
+            if let Some(content) = map.get("content") {
+                // 内联节点 {type:"text", text:"..."} 取它的 text
+                if let Some(t) = map.get("type").and_then(|v| v.as_str()) {
+                    if t == "text" {
+                        if let Some(txt) = map.get("text").and_then(|v| v.as_str()) {
+                            if !out.is_empty() && !out.ends_with(' ') {
+                                out.push(' ');
+                            }
+                            out.push_str(txt);
+                            return;
+                        }
+                    }
+                }
+                collect_blocks_text(content, out);
+            } else if let Some(t) = map.get("type").and_then(|v| v.as_str()) {
+                if t == "text" {
+                    if let Some(txt) = map.get("text").and_then(|v| v.as_str()) {
+                        if !out.is_empty() && !out.ends_with(' ') {
+                            out.push(' ');
+                        }
+                        out.push_str(txt);
+                    }
+                }
+            }
+            if let Some(children) = map.get("children") {
+                collect_blocks_text(children, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 单独提取 content 数组中的纯文本(给 H1 标题用,避免空格污染)
+fn collect_inline_text(content: Option<&serde_json::Value>) -> String {
+    let mut buf = String::new();
+    if let Some(c) = content {
+        if let Some(arr) = c.as_array() {
+            for item in arr {
+                let t = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if t == "text" {
+                    if let Some(txt) = item.get("text").and_then(|v| v.as_str()) {
+                        buf.push_str(txt);
+                    }
+                }
+            }
+        }
+    }
+    buf
 }
 
 /// 从 Markdown 内容生成摘要（去掉标题行，取前 120 字）

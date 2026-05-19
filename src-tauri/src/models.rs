@@ -31,6 +31,10 @@ pub struct Project {
     pub last_opened_at: Option<String>,
     #[serde(rename = "recentFiles")]
     pub recent_files: Vec<RecentFile>,
+    /// 项目级分类列表(独立于其他项目)。老数据缺该字段时 serde 填空,
+    /// store::read_data 会补成 settings.categories 副本。
+    #[serde(default)]
+    pub categories: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -66,6 +70,10 @@ pub struct Settings {
     #[serde(rename = "workspaceRoot")]
     pub workspace_root: String,
     pub categories: Vec<String>,
+    /// 便签附件(图片、文件)存放目录。None = 使用默认 `{workspaceRoot}/notes/assets`。
+    /// 自定义路径必须是绝对路径,允许放在 workspace 之外。
+    #[serde(rename = "noteAssetsPath", default, skip_serializing_if = "Option::is_none")]
+    pub note_assets_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -306,7 +314,9 @@ pub struct MoveFileInput {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MigrateRootInput {
+    #[serde(rename = "oldRoot")]
     pub old_root: String,
+    #[serde(rename = "newRoot")]
     pub new_root: String,
     pub migrate: bool,
 }
