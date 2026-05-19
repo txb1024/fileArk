@@ -7072,6 +7072,23 @@ input {
   padding: 1px 0;
 }
 
+/* BlockNote 默认 input 是 12×24(宽高不等的竖条)+ 外层 flex 没 align-items,
+   导致 checkbox 与文字基线错位。覆盖为正方形 + 垂直居中。 */
+.note-blocknote-root .bn-block-content[data-content-type="checkListItem"] {
+  align-items: center !important;
+}
+.note-blocknote-root .bn-block-content[data-content-type="checkListItem"] > div:has(> input) {
+  height: auto !important;
+  display: flex !important;
+  align-items: center !important;
+}
+.note-blocknote-root .bn-block-content[data-content-type="checkListItem"] > div > input[type="checkbox"] {
+  width: 14px !important;
+  height: 14px !important;
+  margin: 0 6px 0 4px !important;
+  vertical-align: middle !important;
+}
+
 /* 引用块 */
 .note-blocknote-root .bn-block-content[data-content-type="quote"] {
   border-left: 3px solid var(--accent);

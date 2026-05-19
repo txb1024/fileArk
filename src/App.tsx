@@ -10,7 +10,6 @@ import {
   FolderOpen,
   FolderPlus,
   Home,
-  Inbox,
   Menu,
   Pencil,
   Pin,
@@ -598,7 +597,7 @@ export function App() {
   // 快捷鍵
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setSpotlightOpen(true);
       }
@@ -913,7 +912,6 @@ export function App() {
           {[
             { id: "home" as const, label: t.home, icon: Home },
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
-            { id: "inbox" as const, label: t.inbox, icon: Inbox },
             { id: "notes" as const, label: language === "zh" ? "便签" : "Notes", icon: StickyNote },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
             { id: "settings" as const, label: t.settings, icon: Settings },
