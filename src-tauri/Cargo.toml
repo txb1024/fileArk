@@ -17,6 +17,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-single-instance = "2"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,3 +26,9 @@ open = "5"
 regex = "1"
 base64 = "0.22"
 notify = "6"
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+] }

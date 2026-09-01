@@ -180,6 +180,7 @@ pub struct PreviewInfo {
 pub struct SearchFileResult {
     pub name: String,
     pub path: String,
+    pub project_id: String,
     pub project_name: String,
     pub category: String,
     pub size: i64,
@@ -319,4 +320,70 @@ pub struct MigrateRootInput {
     #[serde(rename = "newRoot")]
     pub new_root: String,
     pub migrate: bool,
+}
+
+// ── 日历 / 待办 ────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Todo {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    /// RFC3339,如 "2026-05-19T09:00:00Z"
+    pub start: String,
+    pub end: String,
+    pub done: bool,
+    /// 调色板键名,与前端 colors.ts 对齐
+    pub color: String,
+    /// 提前多少分钟提醒。-1 = 不提醒;0 = 准时;>0 = 提前 N 分钟。
+    /// 老数据缺该字段时默认 -1。
+    #[serde(default = "default_remind_offset")]
+    pub remind_offset_min: i64,
+    /// 是否已经提醒过(避免应用重启后重复弹通知)。
+    /// start 被改动时会被清空。
+    #[serde(default)]
+    pub reminded: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn default_remind_offset() -> i64 {
+    -1
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTodoInput {
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    pub start: String,
+    pub end: String,
+    #[serde(default)]
+    pub color: String,
+    /// 同 Todo.remind_offset_min;省略 = -1(不提醒)
+    #[serde(default = "default_remind_offset")]
+    pub remind_offset_min: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTodoInput {
+    pub title: Option<String>,
+    pub notes: Option<String>,
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub done: Option<bool>,
+    pub color: Option<String>,
+    /// 同 Todo.remind_offset_min;省略 = 不修改
+    pub remind_offset_min: Option<i64>,
+    /// 显式把"已提醒"状态设为 true/false。通常前端在提醒弹出后调一次 true。
+    pub reminded: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TodoStore {
+    pub todos: Vec<Todo>,
 }

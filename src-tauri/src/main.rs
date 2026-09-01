@@ -9,8 +9,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod models;
+mod search;
 mod store;
 mod utils;
+mod drag_export;
 
 use models::*;
 use store::*;
@@ -1115,82 +1117,14 @@ fn read_file_binary(file_path: String) -> Result<String, String> {
 // ═══════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn search_project_files(app: tauri::AppHandle, query: String) -> Result<Vec<SearchFileResult>, String> {
+async fn search_project_files(
+    app: tauri::AppHandle,
+    query: String,
+) -> Result<Vec<SearchFileResult>, String> {
     let data = read_data(&app)?;
-    let lower = query.trim().to_lowercase();
-    if lower.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let mut results: Vec<SearchFileResult> = Vec::new();
-    let max_results = 30;
-    let max_depth = 4; // 分类目录下最多递归 4 层(够覆盖大多数项目结构,不会无限)
-
-    'outer: for project in &data.projects {
-        let project_path = Path::new(&project.path);
-        if !project_path.exists() {
-            continue;
-        }
-        // 用 project.categories(项目级独立),空时回退扫一级目录
-        let categories: Vec<String> = if project.categories.is_empty() {
-            fs::read_dir(project_path)
-                .ok()
-                .map(|rd| {
-                    rd.flatten()
-                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                        .filter_map(|e| {
-                            let n = e.file_name().to_string_lossy().to_string();
-                            if n.starts_with('.') { None } else { Some(n) }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            project.categories.clone()
-        };
-        for category in &categories {
-            let cat_path = project_path.join(category);
-            if !cat_path.exists() || !cat_path.is_dir() {
-                continue;
-            }
-            // 用栈做 DFS,递归扫子目录,文件名/文件夹名命中即加结果
-            let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(cat_path, 0)];
-            while let Some((dir, depth)) = stack.pop() {
-                let entries = match fs::read_dir(&dir) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') {
-                        continue;
-                    }
-                    let path = entry.path();
-                    let ft = entry.file_type().ok();
-                    let is_dir = ft.as_ref().map(|t| t.is_dir()).unwrap_or(false);
-                    if name.to_lowercase().contains(&lower) {
-                        let metadata = entry.metadata().ok();
-                        results.push(SearchFileResult {
-                            name: name.clone(),
-                            path: path.to_string_lossy().to_string(),
-                            project_name: project.name.clone(),
-                            category: category.clone(),
-                            size: metadata.map(|m| m.len() as i64).unwrap_or(0),
-                            is_directory: is_dir,
-                        });
-                        if results.len() >= max_results {
-                            break 'outer;
-                        }
-                    }
-                    if is_dir && depth < max_depth {
-                        stack.push((path, depth + 1));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(results)
+    tauri::async_runtime::spawn_blocking(move || search::search_project_files(&data.projects, &query))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1568,6 +1502,15 @@ fn read_clipboard_files() -> Result<Vec<String>, String> {
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Tauri Commands - 系统剪贴板写入 & 文件拖出
+// ═══════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn copy_files_to_clipboard(paths: Vec<String>) -> Result<(), String> {
+    drag_export::copy_files_to_clipboard(&paths)
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  Tauri Commands - 回收站
 // ═══════════════════════════════════════════════════════════════
 
@@ -1791,6 +1734,93 @@ fn stop_watching(state: tauri::State<'_, Mutex<FsWatcherState>>) -> Result<(), S
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  Tauri Commands - 日历 / 待办
+// ═══════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn list_todos(app: tauri::AppHandle) -> Result<Vec<Todo>, String> {
+    Ok(read_todos(&app)?.todos)
+}
+
+#[tauri::command]
+fn create_todo(app: tauri::AppHandle, input: CreateTodoInput) -> Result<Todo, String> {
+    let now = utils::now_rfc3339();
+    let todo = Todo {
+        id: Uuid::new_v4().to_string(),
+        title: input.title,
+        notes: input.notes,
+        start: input.start,
+        end: input.end,
+        done: false,
+        color: if input.color.is_empty() { "sky".to_string() } else { input.color },
+        remind_offset_min: input.remind_offset_min,
+        reminded: false,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let mut store_data = read_todos(&app)?;
+    store_data.todos.push(todo.clone());
+    write_todos(&app, &store_data)?;
+    Ok(todo)
+}
+
+#[tauri::command]
+fn update_todo(
+    app: tauri::AppHandle,
+    id: String,
+    input: UpdateTodoInput,
+) -> Result<Todo, String> {
+    let mut store_data = read_todos(&app)?;
+    let todo = store_data
+        .todos
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or("找不到待办")?;
+    if let Some(v) = input.title { todo.title = v; }
+    if let Some(v) = input.notes { todo.notes = v; }
+    if let Some(v) = input.start {
+        // start 改了 → 清空 reminded 让重新评估
+        if v != todo.start { todo.reminded = false; }
+        todo.start = v;
+    }
+    if let Some(v) = input.end { todo.end = v; }
+    if let Some(v) = input.done { todo.done = v; }
+    if let Some(v) = input.color { todo.color = v; }
+    if let Some(v) = input.remind_offset_min {
+        // 提醒偏移改了 → 清空 reminded
+        if v != todo.remind_offset_min { todo.reminded = false; }
+        todo.remind_offset_min = v;
+    }
+    if let Some(v) = input.reminded { todo.reminded = v; }
+    todo.updated_at = utils::now_rfc3339();
+    let result = todo.clone();
+    write_todos(&app, &store_data)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn toggle_todo_done(app: tauri::AppHandle, id: String) -> Result<Todo, String> {
+    let mut store_data = read_todos(&app)?;
+    let todo = store_data
+        .todos
+        .iter_mut()
+        .find(|t| t.id == id)
+        .ok_or("找不到待办")?;
+    todo.done = !todo.done;
+    todo.updated_at = utils::now_rfc3339();
+    let result = todo.clone();
+    write_todos(&app, &store_data)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn delete_todo(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut store_data = read_todos(&app)?;
+    store_data.todos.retain(|t| t.id != id);
+    write_todos(&app, &store_data)
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  入口
 // ═══════════════════════════════════════════════════════════════
 
@@ -1800,6 +1830,14 @@ fn app_path(app: &tauri::AppHandle) -> std::path::PathBuf {
 
 fn main() {
     tauri::Builder::default()
+        // 必须最先注册：后续启动的进程会立即退出，并通过回调唤醒现有主窗口。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -1953,6 +1991,7 @@ fn main() {
             set_autostart_enabled,
             send_notification,
             read_clipboard_files,
+            copy_files_to_clipboard,
             get_trash_items,
             delete_project,
             rename_project,
@@ -1985,6 +2024,11 @@ fn main() {
             permanently_delete_note,
             empty_notes_trash,
             save_note_asset,
+            list_todos,
+            create_todo,
+            update_todo,
+            toggle_todo_done,
+            delete_todo,
         ])
         .run(tauri::generate_context!())
         .expect("tauri 启动失败");

@@ -112,7 +112,7 @@ export function ProjectsView({
   // 滞后于 setData 后的新 categories。
   const currentProject = useMemo(
     () => data.projects.find((p) => p.id === activeProject.id) ?? activeProject,
-    [data.projects, activeProject],
+    [data.projects, activeProject]
   );
   const projectCategories = currentProject.categories;
   const [selectedCategory, setSelectedCategory] = useState(
@@ -121,6 +121,7 @@ export function ProjectsView({
   const [categoryFiles, setCategoryFiles] = useState<CategoryFile[]>([]);
   const [fileFilter, setFileFilter] = useState("");
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const [osDropTarget, setOsDropTarget] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("name");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [fileScale, setFileScale] = useState<FileScale>(() =>
@@ -129,19 +130,14 @@ export function ProjectsView({
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>(() =>
     storage.get("archive.fileViewMode", "list" as FileViewMode)
   );
-  const [newFolderName, setNewFolderName] = useState("");
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     file: CategoryFile;
   } | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    new Set()
-  );
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [categoryCollapsed, setCategoryCollapsed] = useState(false);
-  const [categoryCounts, setCategoryCounts] = useState<
-    Record<string, number>
-  >({});
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   // 分类侧栏的新增/删除 UI 状态
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -163,7 +159,7 @@ export function ProjectsView({
   // 必须用 ref 保住 dragStart 时的 file 引用,dragEnd 才能拿到。
   const activeDragFileRef = useRef<CategoryFile | null>(null);
   const dndSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
   // 拖拽碰撞检测:优先指针所在 droppable(嵌套/大小不一时更准),
   // 间隙处 fallback 到矩形相交,避免 over=null 时拖不到目标。
@@ -174,10 +170,10 @@ export function ProjectsView({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [pendingDeleteFile, setPendingDeleteFile] =
-    useState<CategoryFile | null>(null);
+  const [pendingDeleteFile, setPendingDeleteFile] = useState<CategoryFile | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [renamingFile, setRenamingFile] = useState<CategoryFile | null>(null);
+  const [newFolderName, setNewFolderName] = useState("");
 
   // ── Effects ──────────────────────────────────────────────
 
@@ -190,10 +186,52 @@ export function ProjectsView({
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
     let cancelled = false;
+    let expandTimer: ReturnType<typeof setTimeout> | null = null;
     setupDragDrop({
       onEnter: () => setIsDraggingFiles(true),
-      onLeave: () => setIsDraggingFiles(false),
+      onOver: (pos) => {
+        const el = document.elementFromPoint(pos.x, pos.y);
+        const targetEl = el?.closest("[data-drop-target]") as HTMLElement | null;
+        const target = targetEl?.getAttribute("data-drop-target") ?? null;
+        setOsDropTarget(target);
+        // 拖入折叠文件夹时自动展开（悬停 600ms 后展开）
+        if (target?.startsWith("folder:")) {
+          const folderPath = target.slice("folder:".length);
+          setExpandedFolders((prev) => {
+            if (prev.has(folderPath)) return prev; // 已展开则不重复
+            if (expandTimer) clearTimeout(expandTimer);
+            expandTimer = setTimeout(() => {
+              if (!cancelled) {
+                setExpandedFolders((p) => {
+                  const next = new Set(p);
+                  next.add(folderPath);
+                  return next;
+                });
+              }
+            }, 600);
+            return prev;
+          });
+        } else {
+          if (expandTimer) {
+            clearTimeout(expandTimer);
+            expandTimer = null;
+          }
+        }
+      },
+      onLeave: () => {
+        setIsDraggingFiles(false);
+        setOsDropTarget(null);
+        if (expandTimer) {
+          clearTimeout(expandTimer);
+          expandTimer = null;
+        }
+      },
       onDrop: (paths, position) => {
+        setOsDropTarget(null);
+        if (expandTimer) {
+          clearTimeout(expandTimer);
+          expandTimer = null;
+        }
         if (!cancelled) void routeOsDropRef.current(paths, position);
       },
     })
@@ -204,6 +242,7 @@ export function ProjectsView({
       .catch((err) => console.error("setupDragDrop failed:", err));
     return () => {
       cancelled = true;
+      if (expandTimer) clearTimeout(expandTimer);
       unlistenFn?.();
     };
   }, []);
@@ -267,11 +306,18 @@ export function ProjectsView({
 
   // Spotlight 跳转到指定文件:分类切换 + 文件列表刷新完成后,
   // 在 DOM 里按 data-file-path 找到对应行 -> 滚动到视野中央 -> 加 pulse 动画
+  //
+  // 依赖 selectedCategory + activeProject.path：当从其他视图跳进来时，
+  // selectedCategory 可能比 highlightFile 晚一个渲染周期才同步，
+  // 把它们加进依赖让 effect 在分类切换到位后重跑，保证 catRoot 计算正确。
   useEffect(() => {
     if (!highlightFile) return;
+    if (!selectedCategory) return;
     const path = highlightFile.path;
     // 子目录里的文件先展开父目录链,否则 DOM 里没有 data-file-path 节点
-    const catRoot = `${activeProject.path}\\${selectedCategory}`;
+    // 用 / 和 \ 都做分隔，兼容跨平台路径格式
+    const sep = path.includes("\\") ? "\\" : "/";
+    const catRoot = `${activeProject.path}${sep}${selectedCategory}`;
     const lowerPath = path.toLowerCase();
     const lowerRoot = catRoot.toLowerCase();
     if (lowerPath.startsWith(lowerRoot)) {
@@ -281,7 +327,7 @@ export function ProjectsView({
         const parents: string[] = [];
         let cur = catRoot;
         for (let i = 0; i < parts.length - 1; i++) {
-          cur = `${cur}\\${parts[i]}`;
+          cur = `${cur}${sep}${parts[i]}`;
           parents.push(cur);
         }
         setExpandedFolders((prev) => {
@@ -298,9 +344,7 @@ export function ProjectsView({
 
     const tryLocate = () => {
       if (cancelled) return;
-      const row = document.querySelector<HTMLElement>(
-        `[data-file-path="${escapeAttr(path)}"]`,
-      );
+      const row = document.querySelector<HTMLElement>(`[data-file-path="${escapeAttr(path)}"]`);
       if (row) {
         row.scrollIntoView({ behavior: "smooth", block: "center" });
         // 先移除旧的(若上次还没结束)再加,触发动画重新跑
@@ -317,16 +361,16 @@ export function ProjectsView({
       // 等 expand 后子目录子项渲染,稍多给一些机会
       if (attempts < 40) window.setTimeout(tryLocate, 50);
     };
-    // 初次延迟一帧,等 setSelectedCategory 与文件列表 useEffect 都跑过
+    // 初次延迟一帧,等分类切换 + 文件列表 useEffect 都跑过
     const t0 = window.setTimeout(tryLocate, 60);
     return () => {
       cancelled = true;
       clearTimeout(t0);
     };
-  }, [highlightFile]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightFile, selectedCategory, activeProject.path]);
 
   // (旧 effect 已合并到上方 categoriesKey/fileChangeEpoch effect,删除以避免双调 counts)
-
 
   useEffect(() => {
     storage.set("archive.fileScale", fileScale);
@@ -338,18 +382,14 @@ export function ProjectsView({
       setCategoryFiles([]);
       return;
     }
-    api
-      .listCategoryFiles(activeProject.path, selectedCategory)
-      .then(setCategoryFiles);
+    api.listCategoryFiles(activeProject.path, selectedCategory).then(setCategoryFiles);
   }, [activeProject, selectedCategory, fileChangeEpoch]);
 
   // 窗口聚焦时静默刷新当前分类文件
   useEffect(() => {
     function onFocus() {
       if (!activeProject || !selectedCategory) return;
-      api
-        .listCategoryFiles(activeProject.path, selectedCategory)
-        .then(setCategoryFiles);
+      api.listCategoryFiles(activeProject.path, selectedCategory).then(setCategoryFiles);
       api
         .getCategoryCounts(activeProject.path, projectCategories)
         .then(setCategoryCounts)
@@ -363,9 +403,7 @@ export function ProjectsView({
 
   async function refreshCategoryFiles() {
     if (!activeProject || !selectedCategory) return;
-    setCategoryFiles(
-      await api.listCategoryFiles(activeProject.path, selectedCategory)
-    );
+    setCategoryFiles(await api.listCategoryFiles(activeProject.path, selectedCategory));
     api
       .getCategoryCounts(activeProject.path, projectCategories)
       .then(setCategoryCounts)
@@ -437,9 +475,7 @@ export function ProjectsView({
       category: selectedCategory,
       folderName: newFolderName.trim(),
     });
-    setCategoryFiles(
-      await api.listCategoryFiles(activeProject.path, selectedCategory)
-    );
+    setCategoryFiles(await api.listCategoryFiles(activeProject.path, selectedCategory));
     setNewFolderName("");
   }
 
@@ -503,18 +539,14 @@ export function ProjectsView({
       return;
     }
     const exists = projectCategories.some(
-      (c) => c.toLowerCase() === newName.toLowerCase() && c !== oldName,
+      (c) => c.toLowerCase() === newName.toLowerCase() && c !== oldName
     );
     if (exists) {
       window.alert(t.renameCategoryDuplicate.replace("{name}", newName));
       return;
     }
     try {
-      const updated = await api.renameProjectCategory(
-        activeProject.id,
-        oldName,
-        newName,
-      );
+      const updated = await api.renameProjectCategory(activeProject.id, oldName, newName);
       setData(updated);
       if (selectedCategory === oldName) setSelectedCategory(newName);
     } catch (err) {
@@ -585,8 +617,7 @@ export function ProjectsView({
   async function onDndDragEnd(event: DragEndEvent) {
     // 优先用 ref(spring-loaded 卸载源 FileRow 后 event.active.data 会失效)
     const file =
-      activeDragFileRef.current ??
-      (event.active.data.current?.file as CategoryFile | undefined);
+      activeDragFileRef.current ?? (event.active.data.current?.file as CategoryFile | undefined);
     const overId = event.over?.id ? String(event.over.id) : null;
     setActiveDragFile(null);
     activeDragFileRef.current = null;
@@ -666,9 +697,7 @@ export function ProjectsView({
     [...files].sort((a, b) => {
       let result = 0;
       if (sortMode === "time")
-        result =
-          new Date(a.modifiedAt).getTime() -
-          new Date(b.modifiedAt).getTime();
+        result = new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime();
       else if (sortMode === "size") result = a.size - b.size;
       else
         result = a.name.localeCompare(b.name, language === "zh" ? "zh-Hans" : "en", {
@@ -682,14 +711,9 @@ export function ProjectsView({
     file.name.toLowerCase().includes(fileFilter.trim().toLowerCase());
 
   const filteredFiles = sortFiles(
-    categoryFiles.filter(
-      (file) =>
-        matchesFilter(file) || file.children?.some(matchesFilter)
-    )
+    categoryFiles.filter((file) => matchesFilter(file) || file.children?.some(matchesFilter))
   );
-  const rootFiles = filteredFiles.filter(
-    (file) => !file.isDirectory && matchesFilter(file)
-  );
+  const rootFiles = filteredFiles.filter((file) => !file.isDirectory && matchesFilter(file));
   const folderSections = filteredFiles
     .filter((file) => file.isDirectory)
     .map((folder) => ({
@@ -739,9 +763,9 @@ export function ProjectsView({
   function handleFileDoubleClick(file: CategoryFile) {
     clearSelection();
     if (file.isDirectory) {
-      toggleFolderExpanded(file.path);
+      void api.openFolder(file.path);
     } else {
-      onPreviewFile(file.path, file.name);
+      void api.openFile(file.path);
     }
   }
 
@@ -781,6 +805,12 @@ export function ProjectsView({
       e.preventDefault();
       setBatchDeleteOpen(true);
     }
+    // Ctrl+C: 复制选中文件到系统剪贴板
+    if ((e.ctrlKey || e.metaKey) && e.key === "c" && selectedFiles.size > 0) {
+      e.preventDefault();
+      const paths = Array.from(selectedFiles);
+      void api.copyFilesToClipboard(paths);
+    }
   }
 
   // ── Render ──────────────────────────────────────────────
@@ -795,576 +825,536 @@ export function ProjectsView({
       onDragCancel={onDndDragCancel}
     >
       <section className="page projects-page">
-      <div className="project-detail">
-        <div
-          className={`workspace-grid ${categoryCollapsed ? "category-collapsed" : ""}`}
-        >
-          {/* 分类侧边栏 */}
-          <div
-            className={`project-list-panel category-side-panel ${categoryCollapsed ? "collapsed" : ""}`}
-          >
-            <div className="panel-mini-title">
-              {!categoryCollapsed && t.categories}
-              <button
-                className="collapse-btn"
-                onClick={() => setCategoryCollapsed(!categoryCollapsed)}
-              >
-                {categoryCollapsed ? (
-                  <ChevronRight size={16} />
-                ) : (
-                  <ChevronLeft size={16} />
-                )}
-              </button>
-            </div>
-            <div className="category-list">
-              {projectCategories.map((category) => {
-                const isRenaming = renamingCategory === category;
-                return (
-                  <CategoryDropTarget
-                    key={category}
-                    category={category}
-                    selectedCategory={selectedCategory}
-                    dragOverCategory={dragOverCategory}
-                    onContextMenu={(e) => {
-                      if (isRenaming) return;
-                      e.preventDefault();
-                      setCategoryContextMenu({ x: e.clientX, y: e.clientY, category });
-                    }}
-                  >
-                    {isRenaming ? (
+        <div className="project-detail">
+          <div className={`workspace-grid ${categoryCollapsed ? "category-collapsed" : ""}`}>
+            {/* 分类侧边栏 */}
+            <div
+              className={`project-list-panel category-side-panel ${categoryCollapsed ? "collapsed" : ""}`}
+            >
+              <div className="panel-mini-title">
+                {!categoryCollapsed && t.categories}
+                <button
+                  className="collapse-btn"
+                  onClick={() => setCategoryCollapsed(!categoryCollapsed)}
+                >
+                  {categoryCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+                </button>
+              </div>
+              <div className="category-list">
+                {projectCategories.map((category) => {
+                  const isRenaming = renamingCategory === category;
+                  return (
+                    <CategoryDropTarget
+                      key={category}
+                      category={category}
+                      selectedCategory={selectedCategory}
+                      dragOverCategory={dragOverCategory}
+                      onContextMenu={(e) => {
+                        if (isRenaming) return;
+                        e.preventDefault();
+                        setCategoryContextMenu({ x: e.clientX, y: e.clientY, category });
+                      }}
+                    >
+                      {isRenaming ? (
+                        <input
+                          className="category-add-input"
+                          value={renameCategoryName}
+                          onChange={(e) => setRenameCategoryName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void submitRenameCategory();
+                            if (e.key === "Escape") cancelRenameCategory();
+                          }}
+                          onBlur={() => void submitRenameCategory()}
+                          autoFocus
+                        />
+                      ) : (
+                        <button
+                          className={
+                            category === selectedCategory ? "category-row active" : "category-row"
+                          }
+                          onClick={() => setSelectedCategory(category)}
+                        >
+                          <span>
+                            <FolderOpen size={18} />
+                            {category}
+                          </span>
+                          {categoryCounts[category] > 0 && (
+                            <small>{categoryCounts[category]}</small>
+                          )}
+                        </button>
+                      )}
+                    </CategoryDropTarget>
+                  );
+                })}
+                {!categoryCollapsed &&
+                  (addingCategory ? (
+                    <div className="category-row-wrap adding">
                       <input
                         className="category-add-input"
-                        value={renameCategoryName}
-                        onChange={(e) => setRenameCategoryName(e.target.value)}
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") void submitRenameCategory();
-                          if (e.key === "Escape") cancelRenameCategory();
+                          if (e.key === "Enter") void addCategory();
+                          if (e.key === "Escape") {
+                            setAddingCategory(false);
+                            setNewCategoryName("");
+                          }
                         }}
-                        onBlur={() => void submitRenameCategory()}
+                        onBlur={() => void addCategory()}
+                        placeholder={t.addCategoryPlaceholder}
                         autoFocus
                       />
-                    ) : (
-                      <button
-                        className={
-                          category === selectedCategory
-                            ? "category-row active"
-                            : "category-row"
-                        }
-                        onClick={() => setSelectedCategory(category)}
-                      >
-                        <span>
-                          <FolderOpen size={18} />
-                          {category}
-                        </span>
-                        {categoryCounts[category] > 0 && (
-                          <small>{categoryCounts[category]}</small>
-                        )}
-                      </button>
-                    )}
-                  </CategoryDropTarget>
-                );
-              })}
-              {!categoryCollapsed && (
-                addingCategory ? (
-                  <div className="category-row-wrap adding">
-                    <input
-                      className="category-add-input"
-                      value={newCategoryName}
-                      onChange={(e) => setNewCategoryName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void addCategory();
-                        if (e.key === "Escape") {
-                          setAddingCategory(false);
-                          setNewCategoryName("");
-                        }
+                    </div>
+                  ) : (
+                    <button
+                      className="category-add-btn"
+                      onClick={() => {
+                        setAddingCategory(true);
+                        setNewCategoryName("");
                       }}
-                      onBlur={() => void addCategory()}
-                      placeholder={t.addCategoryPlaceholder}
-                      autoFocus
-                    />
-                  </div>
-                ) : (
-                  <button
-                    className="category-add-btn"
-                    onClick={() => {
-                      setAddingCategory(true);
-                      setNewCategoryName("");
-                    }}
-                  >
-                    <Plus size={14} />
-                    <span>{t.addCategory}</span>
-                  </button>
-                )
-              )}
-            </div>
-          </div>
-
-          {/* 文件面板 */}
-          <section className="panel" onKeyDown={handleFilePanelKeyDown} tabIndex={-1}>
-            <div className="panel-title">
-              <h2>{selectedCategory || t.name}</h2>
-            </div>
-
-            {/* 批量选择操作栏（隐藏，选中操作通过右键菜单进行） */}
-
-            {/* 工具栏 */}
-            <div className="file-toolbar">
-              <div className="inline-search">
-                <Search size={16} />
-                <input
-                  value={fileFilter}
-                  onChange={(e) => setFileFilter(e.target.value)}
-                  placeholder={t.filterByName}
-                />
-                {fileFilter && (
-                  <button
-                    className="icon-button"
-                    onClick={() => setFileFilter("")}
-                  >
-                    <X size={16} />
-                  </button>
-                )}
-              </div>
-              <div className="toolbar-display-group">
-                <div className="view-toggle-group">
-                  <button
-                    className={`view-toggle-btn ${fileViewMode === "list" ? "active" : ""}`}
-                    onClick={() => setFileViewMode("list")}
-                    title="列表"
-                  >
-                    <LayoutList size={16} />
-                  </button>
-                  <button
-                    className={`view-toggle-btn ${fileViewMode === "grid" ? "active" : ""}`}
-                    onClick={() => setFileViewMode("grid")}
-                    title="网格"
-                  >
-                    <LayoutGrid size={16} />
-                  </button>
-                </div>
-                <div className="view-toggle-group">
-                  <button
-                    className={`view-toggle-btn ${fileScale === "compact" ? "active" : ""}`}
-                    onClick={() => setFileScale("compact")}
-                    title="紧凑"
-                  >S</button>
-                  <button
-                    className={`view-toggle-btn ${fileScale === "comfortable" ? "active" : ""}`}
-                    onClick={() => setFileScale("comfortable")}
-                    title="舒适"
-                  >M</button>
-                  <button
-                    className={`view-toggle-btn ${fileScale === "large" ? "active" : ""}`}
-                    onClick={() => setFileScale("large")}
-                    title="宽松"
-                  >L</button>
-                </div>
-              </div>
-              <button
-                className="icon-button folder-icon-button"
-                onClick={() =>
-                  api.openFolder(
-                    `${activeProject.path}\\${selectedCategory}`
-                  )
-                }
-                title={t.openCategoryFolder}
-              >
-                <FolderOpen size={16} />
-              </button>
-              <div className="new-folder-control">
-                <input
-                  value={newFolderName}
-                  onChange={(e) => setNewFolderName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") createFolderInCategory();
-                  }}
-                  placeholder={t.folderNamePrompt}
-                />
-              </div>
-              <button
-                className="secondary icon-text-button"
-                onClick={createFolderInCategory}
-                disabled={!newFolderName.trim()}
-              >
-                <FolderPlus size={16} />
-                {t.newFolder}
-              </button>
-              <button className="primary" onClick={() => addFilesToCategory()}>
-                <Plus size={16} />
-                {t.addFiles}
-              </button>
-            </div>
-
-            {/* 表头 */}
-            <div className="file-table-head">
-              <span
-                className={`sortable-header ${sortMode === "name" ? "active" : ""}`}
-                onClick={() => {
-                  setSortMode("name");
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                }}
-              >
-                {t.name}{" "}
-                {sortMode === "name" && (sortDirection === "asc" ? " ↑" : " ↓")}
-              </span>
-              <span
-                className={`sortable-header ${sortMode === "time" ? "active" : ""}`}
-                onClick={() => {
-                  setSortMode("time");
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                }}
-              >
-                {t.modifiedAt}{" "}
-                {sortMode === "time" && (sortDirection === "asc" ? " ↑" : " ↓")}
-              </span>
-              <span
-                className={`sortable-header ${sortMode === "size" ? "active" : ""}`}
-                onClick={() => {
-                  setSortMode("size");
-                  setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-                }}
-              >
-                {t.size}{" "}
-                {sortMode === "size" && (sortDirection === "asc" ? " ↑" : " ↓")}
-              </span>
-            </div>
-
-            {/* 文件列表
-                - 应用内拖拽:dnd-kit 管(RootDropTarget / FolderDropTarget / CategoryDropTarget)
-                - OS 外部拖入:setupDragDrop 全局 listener → 总是加到当前 selectedCategory 根 */}
-            <div
-              className={
-                isDraggingFiles ? "file-drop-zone dragging" : "file-drop-zone"
-              }
-            >
-              {isDraggingFiles && <div className="drop-hint">{t.dragHint}</div>}
-              {filteredFiles.length === 0 ? (
-                <RootDropTarget>
-                  <div className="root-drop-hint-inline">
-                    {categoryFiles.length === 0 ? t.rootDropHint : t.noMatch}
-                  </div>
-                </RootDropTarget>
-              ) : (
-                <div
-                  className={`file-table file-table-${fileScale} file-view-${fileViewMode}`}
-                >
-                  {/* 根目录文件(始终渲染为 root droppable,空时显示 hint) */}
-                  <RootDropTarget>
-                    {rootFiles.length > 0 ? (
-                      <>
-                        <div className="file-section-title">{t.rootFiles}</div>
-                        <div className={`file-items file-items-${fileViewMode}`}>
-                          {rootFiles.map((file) => {
-                            const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
-                            return (
-                              <FileRow
-                                key={file.path}
-                                file={file}
-                                fileViewMode={fileViewMode}
-                                fileScale={fileScale}
-                                index={idx}
-                                isSelected={selectedFiles.has(file.path)}
-                                onContextMenu={(x, y, f) =>
-                                  setContextMenu({ x, y, file: f })
-                                }
-                                onClick={handleFileClick}
-                                onDoubleClick={handleFileDoubleClick}
-                                onPreviewFile={onPreviewFile}
-                              />
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="root-drop-hint-inline">
-                        {t.rootDropHint}
-                      </div>
-                    )}
-                  </RootDropTarget>
-
-                  {/* 文件夹 */}
-                  {folderSections.map((folder) => (
-                    <FolderDropTarget
-                      key={folder.path}
-                      folderPath={folder.path}
                     >
-                      <div
-                        className="file-section-title"
-                        onClick={() => toggleFolderExpanded(folder.path)}
-                        style={{ cursor: "pointer" }}
-                      >
-                        <span>
-                          <span className="folder-expand-icon">
-                            {expandedFolders.has(folder.path) ? (
-                              <ChevronDown size={14} />
-                            ) : (
-                              <ChevronRight size={14} />
-                            )}
+                      <Plus size={14} />
+                      <span>{t.addCategory}</span>
+                    </button>
+                  ))}
+              </div>
+            </div>
+
+            {/* 文件面板 */}
+            <section className="panel" onKeyDown={handleFilePanelKeyDown} tabIndex={-1}>
+              <div className="panel-title">
+                <h2>{selectedCategory || t.name}</h2>
+              </div>
+
+              {/* 批量选择操作栏（隐藏，选中操作通过右键菜单进行） */}
+
+              {/* 工具栏 */}
+              <div className="file-toolbar">
+                <div className="inline-search">
+                  <Search size={16} />
+                  <input
+                    value={fileFilter}
+                    onChange={(e) => setFileFilter(e.target.value)}
+                    placeholder={t.filterByName}
+                  />
+                  {fileFilter && (
+                    <button className="icon-button" onClick={() => setFileFilter("")}>
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+                <div className="toolbar-display-group">
+                  <div className="view-toggle-group">
+                    <button
+                      className={`view-toggle-btn ${fileViewMode === "list" ? "active" : ""}`}
+                      onClick={() => setFileViewMode("list")}
+                      title="列表"
+                    >
+                      <LayoutList size={16} />
+                    </button>
+                    <button
+                      className={`view-toggle-btn ${fileViewMode === "grid" ? "active" : ""}`}
+                      onClick={() => setFileViewMode("grid")}
+                      title="网格"
+                    >
+                      <LayoutGrid size={16} />
+                    </button>
+                  </div>
+                  <div className="view-toggle-group">
+                    <button
+                      className={`view-toggle-btn ${fileScale === "compact" ? "active" : ""}`}
+                      onClick={() => setFileScale("compact")}
+                      title="紧凑"
+                    >
+                      S
+                    </button>
+                    <button
+                      className={`view-toggle-btn ${fileScale === "comfortable" ? "active" : ""}`}
+                      onClick={() => setFileScale("comfortable")}
+                      title="舒适"
+                    >
+                      M
+                    </button>
+                    <button
+                      className={`view-toggle-btn ${fileScale === "large" ? "active" : ""}`}
+                      onClick={() => setFileScale("large")}
+                      title="宽松"
+                    >
+                      L
+                    </button>
+                  </div>
+                </div>
+                <button
+                  className="icon-button folder-icon-button"
+                  onClick={() => api.openFolder(`${activeProject.path}\\${selectedCategory}`)}
+                  title={t.openCategoryFolder}
+                >
+                  <FolderOpen size={16} />
+                </button>
+                <div className="new-folder-control">
+                  <input
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") createFolderInCategory();
+                    }}
+                    placeholder={t.folderNamePrompt}
+                  />
+                </div>
+                <button
+                  className="secondary icon-text-button"
+                  onClick={createFolderInCategory}
+                  disabled={!newFolderName.trim()}
+                >
+                  <FolderPlus size={16} />
+                  {t.newFolder}
+                </button>
+                <button className="primary" onClick={() => addFilesToCategory()}>
+                  <Plus size={16} />
+                  {t.addFiles}
+                </button>
+              </div>
+
+              {/* 表头 */}
+              <div className="file-table-head">
+                <span
+                  className={`sortable-header ${sortMode === "name" ? "active" : ""}`}
+                  onClick={() => {
+                    setSortMode("name");
+                    setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+                  }}
+                >
+                  {t.name} {sortMode === "name" && (sortDirection === "asc" ? " ↑" : " ↓")}
+                </span>
+                <span
+                  className={`sortable-header ${sortMode === "time" ? "active" : ""}`}
+                  onClick={() => {
+                    setSortMode("time");
+                    setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+                  }}
+                >
+                  {t.modifiedAt} {sortMode === "time" && (sortDirection === "asc" ? " ↑" : " ↓")}
+                </span>
+                <span
+                  className={`sortable-header ${sortMode === "size" ? "active" : ""}`}
+                  onClick={() => {
+                    setSortMode("size");
+                    setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+                  }}
+                >
+                  {t.size} {sortMode === "size" && (sortDirection === "asc" ? " ↑" : " ↓")}
+                </span>
+              </div>
+
+              {/* 文件列表
+                - 应用内拖拽:dnd-kit 管(RootDropTarget / FolderDropTarget / CategoryDropTarget)
+                - OS 外部拖入:setupDragDrop 全局 listener → elementFromPoint 路由到 folder/root */}
+              <div className={isDraggingFiles ? "file-drop-zone dragging" : "file-drop-zone"}>
+                {isDraggingFiles && <div className="drop-hint">{t.dragHint}</div>}
+                {filteredFiles.length === 0 ? (
+                  <RootDropTarget osDropTarget={osDropTarget}>
+                    <div className="root-drop-hint-inline">
+                      {categoryFiles.length === 0 ? t.rootDropHint : t.noMatch}
+                    </div>
+                  </RootDropTarget>
+                ) : (
+                  <div className={`file-table file-table-${fileScale} file-view-${fileViewMode}`}>
+                    {/* 根目录文件(始终渲染为 root droppable,空时显示 hint) */}
+                    <RootDropTarget osDropTarget={osDropTarget}>
+                      {rootFiles.length > 0 ? (
+                        <>
+                          <div className="file-section-title">{t.rootFiles}</div>
+                          <div className={`file-items file-items-${fileViewMode}`}>
+                            {rootFiles.map((file) => {
+                              const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
+                              return (
+                                <FileRow
+                                  key={file.path}
+                                  file={file}
+                                  fileViewMode={fileViewMode}
+                                  fileScale={fileScale}
+                                  index={idx}
+                                  isSelected={selectedFiles.has(file.path)}
+                                  onContextMenu={(x, y, f) => setContextMenu({ x, y, file: f })}
+                                  onClick={handleFileClick}
+                                  onDoubleClick={handleFileDoubleClick}
+                                  onPreviewFile={onPreviewFile}
+                                />
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="root-drop-hint-inline">{t.rootDropHint}</div>
+                      )}
+                    </RootDropTarget>
+
+                    {/* 文件夹 */}
+                    {folderSections.map((folder) => (
+                      <FolderDropTarget key={folder.path} folderPath={folder.path} osDropTarget={osDropTarget}>
+                        <div
+                          className="file-section-title"
+                          onClick={() => toggleFolderExpanded(folder.path)}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <span>
+                            <span className="folder-expand-icon">
+                              {expandedFolders.has(folder.path) ? (
+                                <ChevronDown size={14} />
+                              ) : (
+                                <ChevronRight size={14} />
+                              )}
+                            </span>
+                            <Folder size={14} style={{ marginRight: 6, opacity: 0.7 }} />
+                            {folder.name}
                           </span>
-                          <Folder
-                            size={14}
-                            style={{ marginRight: 6, opacity: 0.7 }}
-                          />
-                          {folder.name}
-                        </span>
-                        <div className="file-section-actions">
-                          {copiedFile && (
+                          <div className="file-section-actions">
+                            {copiedFile && (
                             <button
                               className="icon-button"
-                              onClick={() => handlePasteFile(folder.path)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handlePasteFile(folder.path);
+                              }}
                             >
-                              <Download
-                                size={14}
-                                style={{ transform: "rotate(180deg)" }}
-                              />
+                                <Download size={14} style={{ transform: "rotate(180deg)" }} />
+                              </button>
+                            )}
+                            <button
+                              className="icon-button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void api.openFolder(folder.path);
+                              }}
+                              title={t.folder}
+                            >
+                              <FolderOpen size={16} />
                             </button>
-                          )}
-                          <button
-                            className="icon-button"
-                            onClick={() => api.openFolder(folder.path)}
-                            title={t.folder}
-                          >
-                            <FolderOpen size={16} />
-                          </button>
+                          </div>
                         </div>
-                      </div>
-                      {expandedFolders.has(folder.path) && (
-                        <div
-                          className={`file-items file-items-${fileViewMode}`}
-                        >
-                          {(folder.children || []).map((file) => {
-                            const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
-                            return (
-                              <FileRow
-                                key={file.path}
-                                file={file}
-                                fileViewMode={fileViewMode}
-                                fileScale={fileScale}
-                                index={idx}
-                                isSelected={selectedFiles.has(file.path)}
-                                onContextMenu={(x, y, f) =>
-                                  setContextMenu({ x, y, file: f })
-                                }
-                                onClick={handleFileClick}
-                                onDoubleClick={handleFileDoubleClick}
-                                onPreviewFile={onPreviewFile}
-                              />
-                            );
-                          })}
-                        </div>
-                      )}
-                    </FolderDropTarget>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
+                        {expandedFolders.has(folder.path) && (
+                          <div className={`file-items file-items-${fileViewMode}`}>
+                            {(folder.children || []).map((file) => {
+                              const idx = allVisibleFiles.findIndex((f) => f.path === file.path);
+                              return (
+                                <FileRow
+                                  key={file.path}
+                                  file={file}
+                                  fileViewMode={fileViewMode}
+                                  fileScale={fileScale}
+                                  index={idx}
+                                  isSelected={selectedFiles.has(file.path)}
+                                  onContextMenu={(x, y, f) => setContextMenu({ x, y, file: f })}
+                                  onClick={handleFileClick}
+                                  onDoubleClick={handleFileDoubleClick}
+                                  onPreviewFile={onPreviewFile}
+                                />
+                              );
+                            })}
+                          </div>
+                        )}
+                      </FolderDropTarget>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
         </div>
-      </div>
 
-      {/* 右键菜单 */}
-      {contextMenu && (
-        <>
-          <div
-            className="context-menu-overlay"
-            onClick={() => setContextMenu(null)}
-          />
-          <div
-            className="context-menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                if (contextMenu.file.isDirectory) {
-                  api.openFolder(contextMenu.file.path);
-                } else {
-                  api.openFile(contextMenu.file.path);
-                }
-                setContextMenu(null);
-              }}
-            >
-              <FolderOpen size={14} />
-              {t.openFile}
-            </button>
-            {!contextMenu.file.isDirectory && onPreviewFile && (
+        {/* 右键菜单 */}
+        {contextMenu && (
+          <>
+            <div className="context-menu-overlay" onClick={() => setContextMenu(null)} />
+            <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
               <button
                 className="context-menu-item"
                 onClick={() => {
-                  onPreviewFile(
-                    contextMenu.file.path,
-                    contextMenu.file.name
-                  );
+                  if (contextMenu.file.isDirectory) {
+                    api.openFolder(contextMenu.file.path);
+                  } else {
+                    api.openFile(contextMenu.file.path);
+                  }
                   setContextMenu(null);
                 }}
               >
-                <Eye size={14} />
-                {t.previewFile}
+                <FolderOpen size={14} />
+                {t.openFile}
               </button>
-            )}
-            <div className="context-menu-divider" />
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                onCopyFile({
-                  path: contextMenu.file.path,
-                  name: contextMenu.file.name,
-                });
-                setContextMenu(null);
-              }}
-            >
-              <Copy size={14} />
-              {t.copyFile}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                setRenamingFile(contextMenu.file);
-                setContextMenu(null);
-              }}
-            >
-              <Pencil size={14} />
-              重命名
-            </button>
-            {!contextMenu.file.isDirectory && (
+              {!contextMenu.file.isDirectory && onPreviewFile && (
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onPreviewFile(contextMenu.file.path, contextMenu.file.name);
+                    setContextMenu(null);
+                  }}
+                >
+                  <Eye size={14} />
+                  {t.previewFile}
+                </button>
+              )}
+              <div className="context-menu-divider" />
               <button
-                className="context-menu-item danger-text"
-                onClick={() => {
-                  setPendingDeleteFile(contextMenu.file);
-                  setDeleteConfirmOpen(true);
+                className="context-menu-item"
+                onClick={async () => {
+                  await api.copyFilesToClipboard([contextMenu.file.path]);
+                  // 同时保留内部粘贴状态
+                  onCopyFile({
+                    path: contextMenu.file.path,
+                    name: contextMenu.file.name,
+                  });
                   setContextMenu(null);
                 }}
               >
-                <Trash2 size={14} />
-                {t.deleteFile}
+                <Copy size={14} />
+                {t.copyFile}
               </button>
-            )}
-            {selectedFiles.size > 1 && (
-              <>
-                <div className="context-menu-divider" />
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setRenamingFile(contextMenu.file);
+                  setContextMenu(null);
+                }}
+              >
+                <Pencil size={14} />
+                重命名
+              </button>
+              {!contextMenu.file.isDirectory && (
                 <button
                   className="context-menu-item danger-text"
                   onClick={() => {
-                    setBatchDeleteOpen(true);
+                    setPendingDeleteFile(contextMenu.file);
+                    setDeleteConfirmOpen(true);
                     setContextMenu(null);
                   }}
                 >
                   <Trash2 size={14} />
-                  删除选中的 {selectedFiles.size} 个文件
+                  {t.deleteFile}
                 </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
+              )}
+              {selectedFiles.size > 1 && (
+                <>
+                  <div className="context-menu-divider" />
+                  <button
+                    className="context-menu-item danger-text"
+                    onClick={() => {
+                      setBatchDeleteOpen(true);
+                      setContextMenu(null);
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    删除选中的 {selectedFiles.size} 个文件
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        )}
 
-      {/* 分类右键菜单 */}
-      {categoryContextMenu && (
-        <>
-          <div
-            className="context-menu-overlay"
-            onClick={() => setCategoryContextMenu(null)}
+        {/* 分类右键菜单 */}
+        {categoryContextMenu && (
+          <>
+            <div className="context-menu-overlay" onClick={() => setCategoryContextMenu(null)} />
+            <div
+              className="context-menu"
+              style={{ left: categoryContextMenu.x, top: categoryContextMenu.y }}
+            >
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  openCategoryFolderInSystem(categoryContextMenu.category);
+                  setCategoryContextMenu(null);
+                }}
+              >
+                <FolderOpen size={14} />
+                {t.openCategoryFolder}
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  startRenameCategory(categoryContextMenu.category);
+                  setCategoryContextMenu(null);
+                }}
+              >
+                <Pencil size={14} />
+                {t.renameCategory}
+              </button>
+              <div className="context-menu-divider" />
+              <button
+                className="context-menu-item danger-text"
+                onClick={() => {
+                  setConfirmDeleteCategory(categoryContextMenu.category);
+                  setCategoryContextMenu(null);
+                }}
+              >
+                <Trash2 size={14} />
+                {t.deleteCategory}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* 删除确认 */}
+        {deleteConfirmOpen && pendingDeleteFile && (
+          <ConfirmDangerDialog
+            title={t.deleteFile}
+            message={t.deleteFileConfirm}
+            confirmLabel={t.deleteFile}
+            cancelLabel={t.migrateCancel}
+            onConfirm={async () => {
+              await api.deleteFile(pendingDeleteFile.path, {
+                projectId: activeProject.id,
+                projectName: activeProject.name,
+                category: selectedCategory,
+              });
+              await refreshCategoryFiles();
+              setDeleteConfirmOpen(false);
+              setPendingDeleteFile(null);
+            }}
+            onClose={() => {
+              setDeleteConfirmOpen(false);
+              setPendingDeleteFile(null);
+            }}
           />
-          <div
-            className="context-menu"
-            style={{ left: categoryContextMenu.x, top: categoryContextMenu.y }}
-          >
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                openCategoryFolderInSystem(categoryContextMenu.category);
-                setCategoryContextMenu(null);
-              }}
-            >
-              <FolderOpen size={14} />
-              {t.openCategoryFolder}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                startRenameCategory(categoryContextMenu.category);
-                setCategoryContextMenu(null);
-              }}
-            >
-              <Pencil size={14} />
-              {t.renameCategory}
-            </button>
-            <div className="context-menu-divider" />
-            <button
-              className="context-menu-item danger-text"
-              onClick={() => {
-                setConfirmDeleteCategory(categoryContextMenu.category);
-                setCategoryContextMenu(null);
-              }}
-            >
-              <Trash2 size={14} />
-              {t.deleteCategory}
-            </button>
-          </div>
-        </>
-      )}
+        )}
 
-      {/* 删除确认 */}
-      {deleteConfirmOpen && pendingDeleteFile && (
-        <ConfirmDangerDialog
-          title={t.deleteFile}
-          message={t.deleteFileConfirm}
-          confirmLabel={t.deleteFile}
-          cancelLabel={t.migrateCancel}
-          onConfirm={async () => {
-            await api.deleteFile(pendingDeleteFile.path, {
-              projectId: activeProject.id,
-              projectName: activeProject.name,
-              category: selectedCategory,
-            });
-            await refreshCategoryFiles();
-            setDeleteConfirmOpen(false);
-            setPendingDeleteFile(null);
-          }}
-          onClose={() => {
-            setDeleteConfirmOpen(false);
-            setPendingDeleteFile(null);
-          }}
-        />
-      )}
+        {/* 批量删除确认 */}
+        {batchDeleteOpen && (
+          <ConfirmDangerDialog
+            title="批量删除"
+            message={`选中的 ${selectedFiles.size} 个文件会移入回收站,保留 30 天后自动永久删除。`}
+            confirmLabel="删除"
+            cancelLabel={t.migrateCancel}
+            onConfirm={handleDeleteSelected}
+            onClose={() => setBatchDeleteOpen(false)}
+          />
+        )}
 
-      {/* 批量删除确认 */}
-      {batchDeleteOpen && (
-        <ConfirmDangerDialog
-          title="批量删除"
-          message={`选中的 ${selectedFiles.size} 个文件会移入回收站,保留 30 天后自动永久删除。`}
-          confirmLabel="删除"
-          cancelLabel={t.migrateCancel}
-          onConfirm={handleDeleteSelected}
-          onClose={() => setBatchDeleteOpen(false)}
-        />
-      )}
+        {/* 重命名文件/文件夹 */}
+        {renamingFile && (
+          <RenameFileDialog
+            currentName={renamingFile.name}
+            isDirectory={renamingFile.isDirectory}
+            onConfirm={async (newName) => {
+              await api.renameFileInPlace(renamingFile.path, newName);
+              setRenamingFile(null);
+              await refreshCategoryFiles();
+            }}
+            onClose={() => setRenamingFile(null)}
+          />
+        )}
 
-      {/* 重命名文件/文件夹 */}
-      {renamingFile && (
-        <RenameFileDialog
-          currentName={renamingFile.name}
-          isDirectory={renamingFile.isDirectory}
-          onConfirm={async (newName) => {
-            await api.renameFileInPlace(renamingFile.path, newName);
-            setRenamingFile(null);
-            await refreshCategoryFiles();
-          }}
-          onClose={() => setRenamingFile(null)}
-        />
-      )}
-
-      {/* 删除分类确认 — 只从全局列表移除,不动磁盘文件 */}
-      {confirmDeleteCategory && (
-        <ConfirmDangerDialog
-          title={t.deleteCategory}
-          message={t.deleteCategoryConfirm.replace("{name}", confirmDeleteCategory)}
-          confirmLabel={t.deleteCategory}
-          cancelLabel={t.migrateCancel}
-          onConfirm={() => deleteCategory(confirmDeleteCategory)}
-          onClose={() => setConfirmDeleteCategory(null)}
-        />
-      )}
+        {/* 删除分类确认 — 只从全局列表移除,不动磁盘文件 */}
+        {confirmDeleteCategory && (
+          <ConfirmDangerDialog
+            title={t.deleteCategory}
+            message={t.deleteCategoryConfirm.replace("{name}", confirmDeleteCategory)}
+            confirmLabel={t.deleteCategory}
+            cancelLabel={t.migrateCancel}
+            onConfirm={() => deleteCategory(confirmDeleteCategory)}
+            onClose={() => setConfirmDeleteCategory(null)}
+          />
+        )}
       </section>
       <DragOverlay dropAnimation={null}>
         {activeDragFile && (
@@ -1404,13 +1394,13 @@ function FileRow({
   onPreviewFile,
 }: FileRowProps) {
   const icon = getFileIcon(file.name, file.isDirectory, fileViewMode === "grid" ? 32 : 16);
-  // dnd-kit:仅非目录可拖。listeners 绑到根元素接收 pointerdown。
-  // distance:5 activationConstraint(在 DndContext 顶层配)保证 click/dblclick 不被吞。
+  // dnd-kit: 仅非目录文件可内部拖拽（分类间移动）
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: file.path,
     data: { file },
     disabled: file.isDirectory,
   });
+
   return (
     <div
       ref={setNodeRef}
@@ -1435,9 +1425,7 @@ function FileRow({
       </div>
       {fileViewMode === "list" && (
         <>
-          <small>
-            {new Date(file.modifiedAt).toLocaleDateString()}
-          </small>
+          <small>{new Date(file.modifiedAt).toLocaleDateString()}</small>
           <small>{formatSize(file.size)}</small>
         </>
       )}
@@ -1509,20 +1497,22 @@ function CategoryDropTarget({
 // ── FolderDropTarget 子组件 ───────────────────────────────
 //
 // dnd-kit useDroppable 接收应用内拖拽(file row → folder)。
-// OS 外部拖入(系统拖文件)由顶层 setupDragDrop 全局 listener 统一加到当前分类根。
+// 同时也接收 OS 外部拖入: 通过 osDropTarget prop 控制高亮。
 
 interface FolderDropTargetProps {
   folderPath: string;
   children: React.ReactNode;
+  osDropTarget: string | null;
 }
 
-function FolderDropTarget({ folderPath, children }: FolderDropTargetProps) {
+function FolderDropTarget({ folderPath, children, osDropTarget }: FolderDropTargetProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `folder:${folderPath}` });
+  const isOsOver = osDropTarget === `folder:${folderPath}`;
   return (
     <div
       ref={setNodeRef}
       data-drop-target={`folder:${folderPath}`}
-      className={`file-section ${isOver ? "folder-drag-over" : ""}`}
+      className={`file-section ${isOver || isOsOver ? "folder-drag-over" : ""}`}
     >
       {children}
     </div>
@@ -1536,13 +1526,14 @@ function FolderDropTarget({ folderPath, children }: FolderDropTargetProps) {
 // - 拖到 folder section 上 → folder droppable 命中
 // - 拖到 root section 上(folder 之外) → root droppable 命中
 
-function RootDropTarget({ children }: { children: React.ReactNode }) {
+function RootDropTarget({ children, osDropTarget }: { children: React.ReactNode; osDropTarget: string | null }) {
   const { setNodeRef, isOver } = useDroppable({ id: "root" });
+  const isOsOver = osDropTarget === "root";
   return (
     <div
       ref={setNodeRef}
       data-drop-target="root"
-      className={`file-section root-drop-section ${isOver ? "root-drag-over" : ""}`}
+      className={`file-section root-drop-section ${isOver || isOsOver ? "root-drag-over" : ""}`}
     >
       {children}
     </div>

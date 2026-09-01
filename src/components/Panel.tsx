@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 interface PanelProps {
-  title: string;
+  title: ReactNode;
   icon: ReactNode;
   children: ReactNode;
 }

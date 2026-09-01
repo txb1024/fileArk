@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { Search, FileText, Folder, Inbox, StickyNote, X } from "lucide-react";
+import { Search, FileText, Folder, Inbox, LoaderCircle, StickyNote, X } from "lucide-react";
 import Fuse from "fuse.js";
 import { api } from "../api";
 import type { AppData, Project } from "../types";
@@ -12,6 +12,7 @@ interface SearchResult {
   meta?: string;
   size?: number;
   isDirectory?: boolean;
+  projectId?: string;
   projectName?: string;
   category?: string;
   /** 仅 note 用：正文匹配片段 */
@@ -24,10 +25,10 @@ interface SpotlightSearchProps {
   data: AppData;
   onOpenProject: (project: Project) => void;
   onSelectInbox?: (itemId: string) => void;
-  onNavigateToFolder?: (projectName: string, category: string) => void;
+  onNavigateToFolder?: (projectId: string, category: string) => void;
   onPreviewFile?: (path: string, name: string) => void;
   /** 跳转到指定文件所在分类并高亮闪烁该行(替代直接打开预览) */
-  onNavigateToFile?: (projectName: string, category: string, filePath: string) => void;
+  onNavigateToFile?: (projectId: string, category: string, filePath: string) => void;
   /** 点击便签结果时:跳转到便签视图并定位到该 id */
   onSelectNote?: (noteId: string) => void;
 }
@@ -38,25 +39,35 @@ function HighlightText({ text, query }: { text: string; query: string }) {
 
   const parts: React.ReactNode[] = [];
   const lowerText = text.toLowerCase();
-  const lowerQuery = query.toLowerCase();
+  const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))].sort(
+    (a, b) => b.length - a.length
+  );
   let lastIndex = 0;
   let matchCount = 0;
 
   // 限制匹配次数，避免性能问题
-  const maxMatches = 5;
+  const maxMatches = 8;
 
-  let index = lowerText.indexOf(lowerQuery);
-  while (index !== -1 && matchCount < maxMatches) {
+  while (lastIndex < text.length && matchCount < maxMatches) {
+    let index = -1;
+    let matchedTerm = "";
+    for (const term of terms) {
+      const nextIndex = lowerText.indexOf(term, lastIndex);
+      if (nextIndex !== -1 && (index === -1 || nextIndex < index)) {
+        index = nextIndex;
+        matchedTerm = term;
+      }
+    }
+    if (index === -1) break;
     if (index > lastIndex) {
       parts.push(text.slice(lastIndex, index));
     }
     parts.push(
       <mark key={`match-${matchCount}`} className="spotlight-highlight">
-        {text.slice(index, index + query.length)}
+        {text.slice(index, index + matchedTerm.length)}
       </mark>
     );
-    lastIndex = index + query.length;
-    index = lowerText.indexOf(lowerQuery, lastIndex);
+    lastIndex = index + matchedTerm.length;
     matchCount++;
   }
 
@@ -90,6 +101,8 @@ export function SpotlightSearch({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [fileResults, setFileResults] = useState<SearchResult[]>([]);
   const [noteResults, setNoteResults] = useState<SearchResult[]>([]);
+  const [isFileSearching, setIsFileSearching] = useState(false);
+  const [isNoteSearching, setIsNoteSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -112,7 +125,7 @@ export function SpotlightSearch({
         ignoreLocation: true,
         includeScore: false,
       }),
-    [data.projects],
+    [data.projects]
   );
   const inboxFuse = useMemo(
     () =>
@@ -121,7 +134,7 @@ export function SpotlightSearch({
         threshold: 0.4,
         ignoreLocation: true,
       }),
-    [data.inbox],
+    [data.inbox]
   );
 
   const localResults = useMemo<SearchResult[]>(() => {
@@ -152,12 +165,14 @@ export function SpotlightSearch({
   // 文件搜索（异步后端遍历项目目录，防抖 200ms；abort flag 防止旧请求覆盖新请求）
   useEffect(() => {
     const trimmed = query.trim();
-    if (!trimmed || trimmed.length < 2) {
+    if (!trimmed) {
       setFileResults([]);
+      setIsFileSearching(false);
       return;
     }
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     let cancelled = false;
+    setIsFileSearching(true);
     searchTimerRef.current = window.setTimeout(async () => {
       try {
         const backendFiles = await api.searchProjectFiles(trimmed);
@@ -168,17 +183,20 @@ export function SpotlightSearch({
             id: f.path,
             name: f.name,
             path: f.path,
-            meta: `${f.projectName} / ${f.category}`,
+            meta: f.category ? `${f.projectName} / ${f.category}` : f.projectName,
             size: f.size,
             isDirectory: f.isDirectory,
+            projectId: f.projectId,
             projectName: f.projectName,
             category: f.category,
           }))
         );
       } catch {
         if (!cancelled) setFileResults([]);
+      } finally {
+        if (!cancelled) setIsFileSearching(false);
       }
-    }, 200);
+    }, 220);
     return () => {
       cancelled = true;
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -188,12 +206,14 @@ export function SpotlightSearch({
   // 便签搜索（后端 search_notes 同时匹配 title/tags/path/正文,防抖 200ms;abort flag 同上）
   useEffect(() => {
     const trimmed = query.trim();
-    if (!trimmed || trimmed.length < 2) {
+    if (!trimmed) {
       setNoteResults([]);
+      setIsNoteSearching(false);
       return;
     }
     if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
     let cancelled = false;
+    setIsNoteSearching(true);
     noteSearchTimerRef.current = window.setTimeout(async () => {
       try {
         const notes = await api.searchNotes(trimmed);
@@ -210,21 +230,28 @@ export function SpotlightSearch({
         );
       } catch {
         if (!cancelled) setNoteResults([]);
+      } finally {
+        if (!cancelled) setIsNoteSearching(false);
       }
-    }, 200);
+    }, 220);
     return () => {
       cancelled = true;
       if (noteSearchTimerRef.current) clearTimeout(noteSearchTimerRef.current);
     };
   }, [query]);
 
-  // 合并：项目 → 文件 → 便签 → 收件箱
+  // 各类型先保留基础配额，再用剩余结果补满，避免文件结果把便签或项目全部挤掉。
   const results = useMemo(() => {
     const localProjects = localResults.filter((r) => r.type === "project");
     const localInbox = localResults.filter((r) => r.type === "inbox");
-    const merged = [...localProjects, ...fileResults, ...noteResults, ...localInbox];
-    return merged.slice(0, 30);
+    const groups = [localProjects, fileResults, noteResults, localInbox];
+    const quotas = [8, 24, 12, 6];
+    const selected = groups.flatMap((group, index) => group.slice(0, quotas[index]));
+    const remaining = groups.flatMap((group, index) => group.slice(quotas[index]));
+    return [...selected, ...remaining].slice(0, 50);
   }, [localResults, fileResults, noteResults]);
+
+  const isSearching = isFileSearching || isNoteSearching;
 
   useEffect(() => {
     return () => {
@@ -238,6 +265,10 @@ export function SpotlightSearch({
     if (isOpen) {
       setQuery("");
       setSelectedIndex(0);
+      setFileResults([]);
+      setNoteResults([]);
+      setIsFileSearching(false);
+      setIsNoteSearching(false);
       setIsClosing(false);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
@@ -301,17 +332,20 @@ export function SpotlightSearch({
 
   // 动画结束回调（overlay 动画结束时触发）
   const pendingActionRef = useRef<(() => void) | null>(null);
-  const handleOverlayAnimationEnd = useCallback((e?: any) => {
-    // 只响应 overlay 的退出动画，不响应 container 的动画
-    if (e && e.animationName !== "spotlight-overlay-out") return;
-    if (!isClosingRef.current) return;
-    const pending = pendingActionRef.current;
-    pendingActionRef.current = null;
-    setIsClosing(false);
-    // 先执行待定动作，再关闭
-    if (pending) pending();
-    onClose();
-  }, [onClose]);
+  const handleOverlayAnimationEnd = useCallback(
+    (e?: any) => {
+      // 只响应 overlay 的退出动画，不响应 container 的动画
+      if (e && e.animationName !== "spotlight-overlay-out") return;
+      if (!isClosingRef.current) return;
+      const pending = pendingActionRef.current;
+      pendingActionRef.current = null;
+      setIsClosing(false);
+      // 先执行待定动作，再关闭
+      if (pending) pending();
+      onClose();
+    },
+    [onClose]
+  );
 
   // 选择结果（先存动作，等退出动画结束后再执行）
   const handleSelect = (result: SearchResult) => {
@@ -322,15 +356,15 @@ export function SpotlightSearch({
         if (!isClosing) setIsClosing(true);
       }
     } else if (result.type === "file") {
+      const projectId = result.projectId || "";
+      const category = result.category || "";
       if (result.isDirectory) {
-        pendingActionRef.current = () =>
-          onNavigateToFolder?.(result.projectName || "", result.category || "");
-      } else if (onNavigateToFile) {
+        pendingActionRef.current = () => onNavigateToFolder?.(projectId, category);
+      } else if (onNavigateToFile && category) {
         // 优先跳转 + 高亮(替代直接打开预览)
-        pendingActionRef.current = () =>
-          onNavigateToFile(result.projectName || "", result.category || "", result.path);
+        pendingActionRef.current = () => onNavigateToFile(projectId, category, result.path);
       } else {
-        // 兜底:没接 onNavigateToFile 时仍走预览
+        // 项目根目录文件不属于任何分类，直接预览；未接导航回调时也走此兜底。
         pendingActionRef.current = () => onPreviewFile?.(result.path, result.name);
       }
       if (!isClosing) setIsClosing(true);
@@ -380,7 +414,12 @@ export function SpotlightSearch({
         {/* 结果列表 */}
         {query.trim() && (
           <div className="spotlight-results" ref={listRef}>
-            {results.length === 0 ? (
+            {results.length === 0 && isSearching ? (
+              <div className="spotlight-empty spotlight-loading">
+                <LoaderCircle size={20} className="spotlight-spinner" />
+                <p>正在搜索文件和便签…</p>
+              </div>
+            ) : results.length === 0 ? (
               <div className="spotlight-empty">
                 <p>没有找到匹配的结果</p>
               </div>
@@ -421,7 +460,11 @@ export function SpotlightSearch({
                   ))}
                 </div>
                 <div className="spotlight-footer">
-                  <span>{results.length} 个结果</span>
+                  <span>
+                    {isSearching
+                      ? `正在搜索… 已找到 ${results.length} 个结果`
+                      : `${results.length} 个结果`}
+                  </span>
                   <span className="spotlight-footer-hint">
                     <kbd>↑↓</kbd> 导航 <kbd>Enter</kbd> 打开 <kbd>Esc</kbd> 关闭
                   </span>

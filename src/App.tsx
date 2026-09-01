@@ -1,5 +1,6 @@
 import {
   Archive,
+  CalendarDays,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -32,7 +33,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./api";
 import type { AppData, CategoryFile, Project, WorkspaceRegistry } from "./types";
-import { HomeView, TrashView, InboxView, SettingsView, NotesView } from "./views";
+import { HomeView, TrashView, InboxView, SettingsView, NotesView, CalendarView } from "./views";
 import { ProjectsView } from "./components/projects/ProjectsView";
 import { SpotlightSearch } from "./components/SpotlightSearch";
 import { ContextMenu, type ContextMenuItem } from "./components/notes/ContextMenu";
@@ -51,7 +52,16 @@ import { storage } from "./utils";
 
 // ── 類型定義 ──────────────────────────────────────────────
 
-type View = "home" | "projects" | "inbox" | "search" | "settings" | "trash" | "category-edit" | "notes";
+type View =
+  | "home"
+  | "projects"
+  | "inbox"
+  | "search"
+  | "settings"
+  | "trash"
+  | "category-edit"
+  | "notes"
+  | "calendar";
 type Language = "zh" | "en";
 type ThemeMode = "light" | "dark";
 type AccentColor = "blue" | "teal" | "violet" | "orange";
@@ -162,6 +172,12 @@ const messages = {
     metricRootNotSet: "未设置",
     recentProjects: "最近项目",
     recentActivity: "最近操作",
+    todayTodos: "今日待办",
+    noTodayTodosTitle: "今天没有待办",
+    noTodayTodosBody: "去日历里安排一件事,从今天开始。",
+    openCalendar: "打开日历",
+    allDay: "全天",
+    todayCompletedSuffix: "已完成",
     emptyProjectTitle: "还没有项目",
     emptyProjectBody: "先新建一个项目，软件会自动建立标准分类文件夹。",
     emptyActivityTitle: "暂无操作记录",
@@ -206,11 +222,13 @@ const messages = {
     repairPathsResult: "已修复 {count} 个项目路径。",
     repairPathsNone: "没有需要修复的项目。",
     repairWorkspaces: "分离工作空间目录",
-    repairWorkspacesDesc: "把还共用默认根目录的工作空间自动改成 默认根/工作空间名 子目录,并把已有项目目录整体搬过去。",
+    repairWorkspacesDesc:
+      "把还共用默认根目录的工作空间自动改成 默认根/工作空间名 子目录,并把已有项目目录整体搬过去。",
     repairWorkspacesResult: "已分离 {wsCount} 个工作空间,迁移 {fileCount} 个项目目录。",
     repairWorkspacesNone: "没有需要分离的工作空间。",
     noteAssets: "便签附件目录",
-    noteAssetsDesc: "便签中的图片、文件等附件保存位置。留空则使用默认 {workspaceRoot}/notes/assets。",
+    noteAssetsDesc:
+      "便签中的图片、文件等附件保存位置。留空则使用默认 {workspaceRoot}/notes/assets。",
     noteAssetsDefault: "默认（工作目录下 notes/assets）",
     changeNoteAssets: "选择目录",
     resetNoteAssets: "恢复默认",
@@ -247,9 +265,10 @@ const messages = {
     addCategory: "New category",
     deleteCategory: "Delete category",
     renameCategory: "Rename",
-    renameCategoryDuplicate: "Category \"{name}\" already exists. Pick a different name.",
+    renameCategoryDuplicate: 'Category "{name}" already exists. Pick a different name.',
     addCategoryPlaceholder: "Category name…",
-    deleteCategoryConfirm: "Remove \"{name}\" from the global category list? Files and folders on disk are kept.",
+    deleteCategoryConfirm:
+      'Remove "{name}" from the global category list? Files and folders on disk are kept.',
     sortByName: "Name",
     sortByTime: "Time",
     sortBySize: "Size",
@@ -315,6 +334,12 @@ const messages = {
     metricRootNotSet: "Not set",
     recentProjects: "Recent projects",
     recentActivity: "Recent activity",
+    todayTodos: "Today's todos",
+    noTodayTodosTitle: "Nothing planned for today",
+    noTodayTodosBody: "Head to the calendar and add one to get started.",
+    openCalendar: "Open calendar",
+    allDay: "All day",
+    todayCompletedSuffix: "done",
     emptyProjectTitle: "No projects yet",
     emptyProjectBody: "Create a project and the app will set up standard category folders for you.",
     emptyActivityTitle: "No activity yet",
@@ -357,15 +382,19 @@ const messages = {
     workspaceRootNotSet: "Not set",
     changeRoot: "Change",
     repairPaths: "Repair project paths",
-    repairPathsDesc: "If projects fail to open after migrating workspace root, relocate them by name under the current root.",
+    repairPathsDesc:
+      "If projects fail to open after migrating workspace root, relocate them by name under the current root.",
     repairPathsResult: "Repaired {count} project path(s).",
     repairPathsNone: "No projects needed repair.",
     repairWorkspaces: "Separate workspace folders",
-    repairWorkspacesDesc: "Move workspaces still sharing the default root into default-root/workspace-name subfolders, and physically move project folders too.",
-    repairWorkspacesResult: "Separated {wsCount} workspace(s), migrated {fileCount} project folder(s).",
+    repairWorkspacesDesc:
+      "Move workspaces still sharing the default root into default-root/workspace-name subfolders, and physically move project folders too.",
+    repairWorkspacesResult:
+      "Separated {wsCount} workspace(s), migrated {fileCount} project folder(s).",
     repairWorkspacesNone: "No workspaces needed separation.",
     noteAssets: "Note assets folder",
-    noteAssetsDesc: "Where images and files used in notes are stored. Leave blank for the default ({workspaceRoot}/notes/assets).",
+    noteAssetsDesc:
+      "Where images and files used in notes are stored. Leave blank for the default ({workspaceRoot}/notes/assets).",
     noteAssetsDefault: "Default ({workspaceRoot}/notes/assets)",
     changeNoteAssets: "Pick folder",
     resetNoteAssets: "Reset",
@@ -424,7 +453,7 @@ export function App() {
     (
       nextView: View,
       nextProjectId: string | null = null,
-      extra: { category?: string; noteId?: string; replace?: boolean } = {},
+      extra: { category?: string; noteId?: string; replace?: boolean } = {}
     ) => {
       const { category, noteId, replace = false } = extra;
       setNav((prev) => {
@@ -439,12 +468,7 @@ export function App() {
           return prev; // 完全同位置不重复 push
         }
         // replace 模式:只在 view+pid 相同时合并到当前 entry,不增加历史
-        if (
-          replace &&
-          cur &&
-          cur.view === nextView &&
-          cur.projectId === nextProjectId
-        ) {
+        if (replace && cur && cur.view === nextView && cur.projectId === nextProjectId) {
           const merged = [...prev.history];
           merged[prev.index] = { view: nextView, projectId: nextProjectId, category, noteId };
           return { ...prev, history: merged };
@@ -455,18 +479,18 @@ export function App() {
         return { history: newHistory, index: newHistory.length - 1 };
       });
     },
-    [],
+    []
   );
   const goBack = useCallback(
     () => setNav((prev) => (prev.index > 0 ? { ...prev, index: prev.index - 1 } : prev)),
-    [],
+    []
   );
   const goForward = useCallback(
     () =>
       setNav((prev) =>
-        prev.index < prev.history.length - 1 ? { ...prev, index: prev.index + 1 } : prev,
+        prev.index < prev.history.length - 1 ? { ...prev, index: prev.index + 1 } : prev
       ),
-    [],
+    []
   );
   const canGoBack = nav.index > 0;
   const canGoForward = nav.index < nav.history.length - 1;
@@ -656,7 +680,7 @@ export function App() {
       navigate("projects", project.id);
       setData(await api.markProjectOpened(project.id));
     },
-    [navigate],
+    [navigate]
   );
 
   const addInboxFiles = useCallback(async () => {
@@ -676,13 +700,16 @@ export function App() {
     [selectedInbox]
   );
 
-  const handleSwitchWorkspace = useCallback(async (workspaceId: string) => {
-    setData(await api.switchWorkspace(workspaceId));
-    setRegistry(await api.listWorkspaces());
-    navigate("home");
-    setWsDropdownOpen(false);
-    setSidebarOpen(false);
-  }, [navigate]);
+  const handleSwitchWorkspace = useCallback(
+    async (workspaceId: string) => {
+      setData(await api.switchWorkspace(workspaceId));
+      setRegistry(await api.listWorkspaces());
+      navigate("home");
+      setWsDropdownOpen(false);
+      setSidebarOpen(false);
+    },
+    [navigate]
+  );
 
   // 关闭工作空间弹窗时统一清理"新建"输入状态
   const closeWsDropdown = useCallback(() => {
@@ -737,29 +764,23 @@ export function App() {
   }, []);
 
   // ── 项目右键菜单 ────────────────────────────────────────
-  const handleProjectContextMenu = useCallback(
-    (e: React.MouseEvent, project: Project) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setProjectMenu({ x: e.clientX, y: e.clientY, project });
-    },
-    []
-  );
+  const handleProjectContextMenu = useCallback((e: React.MouseEvent, project: Project) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setProjectMenu({ x: e.clientX, y: e.clientY, project });
+  }, []);
 
   const closeProjectMenu = useCallback(() => setProjectMenu(null), []);
 
-  const handleProjectRenameConfirm = useCallback(
-    async (projectId: string, newName: string) => {
-      try {
-        setData(await api.renameProject(projectId, newName));
-        setDialog({ type: "none" });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        window.alert(`重命名失败：${msg}`);
-      }
-    },
-    []
-  );
+  const handleProjectRenameConfirm = useCallback(async (projectId: string, newName: string) => {
+    try {
+      setData(await api.renameProject(projectId, newName));
+      setDialog({ type: "none" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      window.alert(`重命名失败：${msg}`);
+    }
+  }, []);
 
   const handleProjectDeleteConfirm = useCallback(
     async (projectId: string) => {
@@ -852,10 +873,18 @@ export function App() {
       }
       // 需要二进制 base64 的类型（Office / 电子书 / 3D / 字体 / 邮件 / 字幕 / 地理 / RTF / IPYNB / 压缩包）
       const binaryTypes = [
-        "excel", "word", "pptx",
-        "ipynb", "epub", "archive",
-        "subtitle", "email", "model3d",
-        "font", "geo", "rtf",
+        "excel",
+        "word",
+        "pptx",
+        "ipynb",
+        "epub",
+        "archive",
+        "subtitle",
+        "email",
+        "model3d",
+        "font",
+        "geo",
+        "rtf",
       ];
       if (binaryTypes.includes(previewType)) {
         const binaryBase64 = await api.readFileBinary(path);
@@ -912,6 +941,11 @@ export function App() {
           {[
             { id: "home" as const, label: t.home, icon: Home },
             { id: "projects" as const, label: t.projects, icon: FolderKanban },
+            {
+              id: "calendar" as const,
+              label: language === "zh" ? "日历" : "Calendar",
+              icon: CalendarDays,
+            },
             { id: "notes" as const, label: language === "zh" ? "便签" : "Notes", icon: StickyNote },
             { id: "trash" as const, label: t.trash, icon: Trash2 },
             { id: "settings" as const, label: t.settings, icon: Settings },
@@ -1139,6 +1173,9 @@ export function App() {
             onOpenProject={openProject}
             onNewProject={() => (hasRoot ? setNewProjectOpen(true) : navigate("settings"))}
             onImport={addInboxFiles}
+            onOpenCalendar={() => navigate("calendar")}
+            language={language}
+            workspaceKey={registry?.activeWorkspaceId}
             t={t}
           />
         )}
@@ -1216,10 +1253,12 @@ export function App() {
           <NotesView
             language={language}
             currentNoteId={currentNoteId}
-            onNoteChange={(id, replace) =>
-              navigate("notes", null, { noteId: id, replace })
-            }
+            onNoteChange={(id, replace) => navigate("notes", null, { noteId: id, replace })}
           />
+        )}
+
+        {view === "calendar" && (
+          <CalendarView language={language} workspaceKey={registry?.activeWorkspaceId} />
         )}
       </main>
 
@@ -1345,15 +1384,15 @@ export function App() {
           navigate("inbox");
           setSelectedInbox([itemId]);
         }}
-        onNavigateToFolder={(projectName, category) => {
-          const project = data.projects.find((p) => p.name === projectName);
+        onNavigateToFolder={(projectId, category) => {
+          const project = data.projects.find((p) => p.id === projectId);
           if (project) {
             navigate("projects", project.id, { category });
           }
         }}
         onPreviewFile={handlePreviewFile}
-        onNavigateToFile={(projectName, category, filePath) => {
-          const project = data.projects.find((p) => p.name === projectName);
+        onNavigateToFile={(projectId, category, filePath) => {
+          const project = data.projects.find((p) => p.id === projectId);
           if (!project) return;
           navigate("projects", project.id, { category });
           setHighlightFile({ path: filePath, ts: Date.now() });

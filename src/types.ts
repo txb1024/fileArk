@@ -183,6 +183,46 @@ export type UpdateNoteMetaInput = {
   pinned?: boolean;
 };
 
+// 日历 / 待办
+export type TodoColor = "rose" | "amber" | "lemon" | "mint" | "sky" | "indigo" | "violet" | "slate";
+
+export type Todo = {
+  id: string;
+  title: string;
+  notes: string;
+  /** RFC3339,如 "2026-05-19T09:00:00Z" */
+  start: string;
+  end: string;
+  done: boolean;
+  color: TodoColor;
+  /** 提前多少分钟提醒。-1 = 不提醒;0 = 准时;>0 = 提前 N 分钟 */
+  remindOffsetMin: number;
+  /** 是否已经提醒过(避免应用重启后重复弹通知) */
+  reminded: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateTodoInput = {
+  title: string;
+  notes?: string;
+  start: string;
+  end: string;
+  color?: TodoColor;
+  remindOffsetMin?: number;
+};
+
+export type UpdateTodoInput = {
+  title?: string;
+  notes?: string;
+  start?: string;
+  end?: string;
+  done?: boolean;
+  color?: TodoColor;
+  remindOffsetMin?: number;
+  reminded?: boolean;
+};
+
 // UI 类型
 export type Language = "zh" | "en";
 export type ThemeMode = "light" | "dark";
@@ -269,6 +309,12 @@ export type Messages = {
   metricRootNotSet: string;
   recentProjects: string;
   recentActivity: string;
+  todayTodos: string;
+  noTodayTodosTitle: string;
+  noTodayTodosBody: string;
+  openCalendar: string;
+  allDay: string;
+  todayCompletedSuffix: string;
   emptyProjectTitle: string;
   emptyProjectBody: string;
   emptyActivityTitle: string;
@@ -365,11 +411,7 @@ export type ArchiveApi = {
   /** 在项目根创建分类目录(物理 mkdir),返回 sync 后的 AppData。 */
   createProjectCategory: (projectId: string, name: string) => Promise<AppData>;
   /** 重命名分类目录(物理 rename),返回 sync 后的 AppData。 */
-  renameProjectCategory: (
-    projectId: string,
-    oldName: string,
-    newName: string,
-  ) => Promise<AppData>;
+  renameProjectCategory: (projectId: string, oldName: string, newName: string) => Promise<AppData>;
   /** 删除分类目录(整目录移到回收站),返回 sync 后的 AppData。 */
   deleteProjectCategory: (projectId: string, category: string) => Promise<AppData>;
   /** 自定义便签附件目录。传 null 恢复默认 */
@@ -404,16 +446,25 @@ export type ArchiveApi = {
   }>;
   deleteFile: (
     filePath: string,
-    context?: { projectId?: string; projectName?: string; category?: string },
+    context?: { projectId?: string; projectName?: string; category?: string }
   ) => Promise<void>;
   copyFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   moveFileTo: (input: { sourcePath: string; targetPath: string }) => Promise<void>;
   renameFileInPlace: (sourcePath: string, newName: string) => Promise<string>;
   readClipboardFiles: () => Promise<string[]>;
+  copyFilesToClipboard: (paths: string[]) => Promise<void>;
   startWatching: (path: string) => Promise<void>;
   stopWatching: () => Promise<void>;
   searchProjectFiles: (query: string) => Promise<
-    Array<{ name: string; path: string; projectName: string; category: string; size: number; isDirectory: boolean }>
+    Array<{
+      name: string;
+      path: string;
+      projectId: string;
+      projectName: string;
+      category: string;
+      size: number;
+      isDirectory: boolean;
+    }>
   >;
   // 便签
   listNotesTree: () => Promise<NoteTreeNode[]>;
@@ -439,5 +490,10 @@ export type ArchiveApi = {
   listPendingMigrations: () => Promise<string[]>;
   /** 把指定 .md 便签替换为 .bnote (前端用 BlockNote 解析好 markdown 后调用) */
   migrateMdToBnote: (oldId: string, bnoteContent: string) => Promise<NoteMeta>;
+  // 日历 / 待办
+  listTodos: () => Promise<Todo[]>;
+  createTodo: (input: CreateTodoInput) => Promise<Todo>;
+  updateTodo: (id: string, input: UpdateTodoInput) => Promise<Todo>;
+  toggleTodoDone: (id: string) => Promise<Todo>;
+  deleteTodo: (id: string) => Promise<void>;
 };
-

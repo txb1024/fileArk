@@ -1752,3 +1752,36 @@ pub fn list_category_files(
     files.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(files)
 }
+
+// ── Todo / Calendar ─────────────────────────────────────────
+
+/// 按工作空间隔离:`{app_data}/todos-{workspaceId}.json`。
+/// 如果 registry 未初始化(几乎不会发生),退化为全局 `todos.json`。
+fn todos_data_path(app: &AppHandle) -> std::path::PathBuf {
+    match read_registry(app) {
+        Ok(reg) if !reg.active_workspace_id.is_empty() => {
+            app_data_dir(app).join(format!("todos-{}.json", reg.active_workspace_id))
+        }
+        _ => app_data_dir(app).join("todos.json"),
+    }
+}
+
+pub fn read_todos(app: &AppHandle) -> Result<crate::models::TodoStore, String> {
+    let path = todos_data_path(app);
+    if !path.exists() {
+        return Ok(crate::models::TodoStore::default());
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&raw).or_else(|_| Ok(crate::models::TodoStore::default()))
+}
+
+pub fn write_todos(app: &AppHandle, store: &crate::models::TodoStore) -> Result<(), String> {
+    let path = todos_data_path(app);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    let json = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
